@@ -89,12 +89,14 @@ git commit -m "chore: scaffold Flutter project for Android and iOS"
 
 - [ ] **Step 1: Instalar dependencias de ejecución y de desarrollo**
 
-Se usa `pub add` en vez de fijar versiones a mano para que resuelva las compatibles con Flutter 3.41.
-
 ```bash
-flutter pub add drift drift_flutter path_provider flutter_riverpod intl http
-flutter pub add --dev drift_dev build_runner
+flutter pub add drift:2.34.0 drift_flutter path_provider flutter_riverpod intl http
+flutter pub add --dev drift_dev:2.34.0 build_runner
 ```
+
+**Por qué `drift` va clavado a 2.34.0 y no con `^`:** `drift` y `drift_dev` 2.35.0 exigen `analyzer >=13`, que a su vez exige `meta >=1.18`. Flutter 3.41.4 trae `meta 1.17.0` clavado en el SDK, así que 2.35.0 no resuelve de ninguna manera. La pareja 2.34.0 sí, con `analyzer 10.0.1`. Las dos versiones tienen que moverse juntas: `drift_dev` genera el código que consume `drift`, y un desajuste entre ellas da errores de compilación difíciles de leer. De ahí el pin exacto en ambas, sin intercalo.
+
+Cuando Flutter suba su `meta` a 1.18 o superior, se podrá pasar a `^2.35.0` en ambas a la vez y regenerar con `build_runner`.
 
 - [ ] **Step 2: Verificar que resuelve**
 
