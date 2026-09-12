@@ -1,5 +1,6 @@
 // lib/data/repositories/account_repository.dart
 import 'package:drift/drift.dart';
+import '../../core/civil_date.dart';
 import '../../core/currency.dart';
 import '../../core/money.dart';
 import '../db/database.dart';
@@ -42,38 +43,59 @@ class AccountRepository {
   Future<Account> byId(int id) =>
       (db.select(db.accounts)..where((a) => a.id.equals(id))).getSingle();
 
+  /// El `id` como segundo criterio no es decorativo: `sortOrder` vale 0 en
+  /// todas las filas, y ordenar por una columna con todos los valores
+  /// iguales deja el orden a criterio del planificador de SQLite, que puede
+  /// cambiar al añadir un índice.
   Future<List<Account>> activeAccounts() => (db.select(db.accounts)
         ..where((a) => a.isArchived.equals(false))
-        ..orderBy([(a) => OrderingTerm(expression: a.sortOrder)]))
+        ..orderBy([
+          (a) => OrderingTerm(expression: a.sortOrder),
+          (a) => OrderingTerm(expression: a.id),
+        ]))
       .get();
 
   Stream<List<Account>> watchActiveAccounts() => (db.select(db.accounts)
         ..where((a) => a.isArchived.equals(false))
-        ..orderBy([(a) => OrderingTerm(expression: a.sortOrder)]))
+        ..orderBy([
+          (a) => OrderingTerm(expression: a.sortOrder),
+          (a) => OrderingTerm(expression: a.id),
+        ]))
       .watch();
 
-  /// Cuentas activas ordenadas por uso reciente: primero las que más
-  /// movimientos tienen, y las que no tienen ninguno detrás, por `id`.
+  /// Cuentas activas ordenadas por uso, para los chips de la hoja de añadir.
   ///
-  /// No se puede resolver con `sortOrder`, que es un valor fijo: la
-  /// frecuencia depende del historial y cambia sola según usas la app. Es la
-  /// consulta que alimenta los chips de la hoja de añadir.
-  Stream<List<Account>> watchMostUsed({int limit = 4}) => db
-      .customSelect(
-        '''
-        SELECT a.* FROM accounts a
-        LEFT JOIN transactions t
-          ON t.account_id = a.id OR t.counter_account_id = a.id
-        WHERE a.is_archived = 0
-        GROUP BY a.id
-        ORDER BY COUNT(t.id) DESC, a.id ASC
-        LIMIT ?1
-        ''',
-        variables: [Variable<int>(limit)],
-        readsFrom: {db.accounts, db.transactions},
-      )
-      .watch()
-      .map((rows) => rows.map((r) => db.accounts.map(r.data)).toList());
+  /// Cuenta primero los movimientos desde [since] (90 días por defecto) y usa
+  /// el total histórico solo para deshacer empates. «Frecuencia» es un ritmo,
+  /// no un acumulado: contando toda la vida, una cuenta de efectivo con 500
+  /// movimientos de hace dos años seguiría por delante de la que usas cada
+  /// día, y lo haría para siempre. El total histórico como segundo criterio
+  /// evita que, al estrenar la app o tras un parón, el orden quede aleatorio.
+  ///
+  /// No se puede resolver con `sortOrder`, que es un valor fijo.
+  Stream<List<Account>> watchMostUsed({int limit = 4, String? since}) {
+    final cutoff = since ??
+        civilDateOf(DateTime.now().subtract(const Duration(days: 90)));
+    return db
+        .customSelect(
+          '''
+          SELECT a.*,
+                 COUNT(t.id) AS all_time,
+                 COUNT(CASE WHEN t.date >= ?2 THEN 1 END) AS recent
+          FROM accounts a
+          LEFT JOIN transactions t
+            ON t.account_id = a.id OR t.counter_account_id = a.id
+          WHERE a.is_archived = 0
+          GROUP BY a.id
+          ORDER BY recent DESC, all_time DESC, a.id ASC
+          LIMIT ?1
+          ''',
+          variables: [Variable<int>(limit), Variable<String>(cutoff)],
+          readsFrom: {db.accounts, db.transactions},
+        )
+        .watch()
+        .map((rows) => rows.map((r) => db.accounts.map(r.data)).toList());
+  }
 
   Future<void> archive(int id) => (db.update(db.accounts)
         ..where((a) => a.id.equals(id)))
@@ -122,6 +144,9 @@ class AccountRepository {
     FROM accounts a
   ''';
 
+  /// A propósito **sin** filtrar por archivadas: se pide el saldo de una
+  /// cuenta concreta que ya conoces, y una archivada sigue teniendo saldo.
+  /// El filtro de [watchBalances] es otra cosa: ahí se listan las activas.
   Future<Money> balanceOf(int accountId) async {
     final rows = await db
         .customSelect(

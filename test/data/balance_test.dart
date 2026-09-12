@@ -94,4 +94,29 @@ void main() {
     await insertTx(type: TxType.expense, accountId: card, amountMinor: 31240, currency: 'EUR');
     expect(await repo.balanceOf(card), const Money(-31240, Currency.eur));
   });
+
+  test('un contra-importe en un gasto no suma a la otra cuenta', () async {
+    // Fila corrupta: un gasto no debería llevar cuenta destino. El filtro
+    // `AND t.type = 'transfer'` del segundo subconsulta existe justo para
+    // ignorarla. Sin esta prueba, borrar ese filtro no rompe nada.
+    final origen = await repo.create(
+      name: 'Origen',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final otra = await repo.create(
+      name: 'Otra',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    await insertTx(
+      type: TxType.expense,
+      accountId: origen,
+      amountMinor: 5000,
+      currency: 'EUR',
+      counterAccountId: otra,
+      counterAmountMinor: 5000,
+    );
+    expect(await repo.balanceOf(otra), Money.zero(Currency.eur));
+  });
 }

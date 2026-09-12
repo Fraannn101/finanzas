@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:finanzas/core/currency.dart';
@@ -89,9 +90,76 @@ void main() {
             date: '2026-09-12',
           ));
     }
-    final orden = await repo.watchMostUsed().first;
+    // `since` explícito: si dependiera de la fecha de hoy, esta prueba
+    // empezaría a fallar sola a los 90 días de escribirla.
+    final orden = await repo.watchMostUsed(since: '2026-01-01').first;
     expect(orden.first.id, mucho);
     expect(orden.map((a) => a.id), contains(poco));
+  });
+
+  test('el uso reciente manda sobre el histórico', () async {
+    final antigua = await repo.create(
+      name: 'Efectivo',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final actual = await repo.create(
+      name: 'Revolut',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    Future<void> gasto(int cuenta, String fecha) =>
+        db.into(db.transactions).insert(TransactionsCompanion.insert(
+              type: TxType.expense,
+              accountId: cuenta,
+              amountMinor: 100,
+              currency: 'EUR',
+              fxRateToEurScaled: 100000000,
+              amountEurMinor: 100,
+              date: fecha,
+            ));
+
+    for (var i = 0; i < 10; i++) {
+      await gasto(antigua, '2024-01-15'); // mucho, pero viejo
+    }
+    await gasto(actual, '2026-09-10'); // poco, pero reciente
+
+    final orden = await repo.watchMostUsed(since: '2026-06-01').first;
+    expect(orden.first.id, actual);
+  });
+
+  test('una transferencia cuenta para las dos cuentas', () async {
+    final origen = await repo.create(
+      name: 'Origen',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final destino = await repo.create(
+      name: 'Destino',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final tercera = await repo.create(
+      name: 'Sin usar',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    await db.into(db.transactions).insert(TransactionsCompanion.insert(
+          type: TxType.transfer,
+          accountId: origen,
+          amountMinor: 1000,
+          currency: 'EUR',
+          fxRateToEurScaled: 100000000,
+          amountEurMinor: 1000,
+          date: '2026-09-12',
+          counterAccountId: Value(destino),
+          counterAmountMinor: const Value(1000),
+        ));
+
+    final orden = await repo.watchMostUsed(since: '2026-01-01').first;
+    // La transferencia sube a las dos, no solo al origen.
+    expect(orden.map((a) => a.id).take(2), containsAll([origen, destino]));
+    expect(orden.last.id, tercera);
   });
 
   test('permite cambiar la divisa solo si la cuenta está vacía', () async {
