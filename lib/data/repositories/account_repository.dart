@@ -1,6 +1,7 @@
 // lib/data/repositories/account_repository.dart
 import 'package:drift/drift.dart';
 import '../../core/currency.dart';
+import '../../core/money.dart';
 import '../db/database.dart';
 import '../db/tables.dart';
 
@@ -99,6 +100,58 @@ class AccountRepository {
     await (db.update(db.accounts)..where((a) => a.id.equals(id)))
         .write(AccountsCompanion(currency: Value(currency.code)));
   }
+
+  /// Saldo inicial, menos gastos y transferencias salientes, más ingresos y
+  /// transferencias entrantes. Todo en la divisa nativa de la cuenta.
+  static const String _balanceSql = '''
+    SELECT a.id AS account_id,
+           a.currency AS currency,
+           a.initial_balance_minor
+           + COALESCE((
+               SELECT SUM(CASE t.type
+                            WHEN 'income'   THEN  t.amount_minor
+                            WHEN 'expense'  THEN -t.amount_minor
+                            WHEN 'transfer' THEN -t.amount_minor
+                          END)
+               FROM transactions t WHERE t.account_id = a.id), 0)
+           + COALESCE((
+               SELECT SUM(t.counter_amount_minor)
+               FROM transactions t
+               WHERE t.counter_account_id = a.id AND t.type = 'transfer'), 0)
+           AS balance_minor
+    FROM accounts a
+  ''';
+
+  Future<Money> balanceOf(int accountId) async {
+    final rows = await db
+        .customSelect(
+          '$_balanceSql WHERE a.id = ?1',
+          variables: [Variable<int>(accountId)],
+          readsFrom: {db.accounts, db.transactions},
+        )
+        .get();
+    final row = rows.single;
+    return Money(
+      row.read<int>('balance_minor'),
+      Currency.byCode(row.read<String>('currency')),
+    );
+  }
+
+  /// Saldo de todas las cuentas activas, por id. Se recalcula solo cuando
+  /// cambian las cuentas o los movimientos.
+  Stream<Map<int, Money>> watchBalances() => db
+      .customSelect(
+        '$_balanceSql WHERE a.is_archived = 0',
+        readsFrom: {db.accounts, db.transactions},
+      )
+      .watch()
+      .map((rows) => {
+            for (final row in rows)
+              row.read<int>('account_id'): Money(
+                row.read<int>('balance_minor'),
+                Currency.byCode(row.read<String>('currency')),
+              )
+          });
 
   Future<List<AccountGroup>> groupedByInstitution() async {
     final institutions = await (db.select(db.institutions)
