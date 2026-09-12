@@ -184,6 +184,7 @@ La hoja contiene, de arriba abajo:
 | Borrar cuenta o categoría con movimientos | No se borra: se archiva. Desaparece de la interfaz y sus movimientos siguen contando. |
 | Cambiar la divisa de una cuenta | Permitido solo si la cuenta no tiene movimientos. Con movimientos: archivar y crear otra. |
 | Importar dos veces el mismo extracto | Huella por fila (fecha + importe + concepto + cuenta). La vista previa marca las existentes y no las reinserta. |
+| Leer un importe de un CSV | La cadena decimal se parsea **directamente a unidades menores**, partiendo por la coma o el punto y rellenando los decimales. Nunca pasando por `double`: `1.005` se almacena en binario como `1.00499999…` y redondearía a 100 céntimos en lugar de 101. Es un céntimo por fila, en miles de filas. |
 | Mapeo de columnas erróneo | El lote de importación se deshace entero de un toque. |
 | Husos horarios | Las fechas se guardan sin hora. Un gasto de las 23:50 no salta de día. |
 | Migración de esquema | Copia de seguridad automática antes de cada migración. |

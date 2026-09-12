@@ -279,10 +279,28 @@ void main() {
   });
 
   test('la suma de una lista vacía es cero en la divisa dada', () {
-    expect(Money.sum(const [], Currency.usd).minorUnits, 0);
+    expect(Money.sum(const [], Currency.usd), Money.zero(Currency.usd));
+  });
+
+  test('sumar una lista con divisas mezcladas es un error', () {
+    expect(
+      () => Money.sum(
+        [const Money(100, Currency.eur), const Money(100, Currency.gbp)],
+        Currency.eur,
+      ),
+      throwsA(isA<CurrencyMismatchError>()),
+    );
+  });
+
+  test('valor absoluto, negación y cero', () {
+    expect(const Money(-5230, Currency.eur).abs, const Money(5230, Currency.eur));
+    expect((-const Money(100, Currency.gbp)).minorUnits, -100);
+    expect(Money.zero(Currency.usd).isZero, isTrue);
   });
 }
 ```
+
+Las dos últimas pruebas cubren ramas que de otro modo llegarían sin red a tareas posteriores: `abs` se usa en el formateo de la tarea 7, `zero` en las tareas 12, 16 y 21, y el control de divisas de `sum` es la única comprobación que no pasa por `_same`.
 
 - [ ] **Step 2: Ejecutar la prueba para verla fallar**
 
@@ -316,20 +334,29 @@ class Money implements Comparable<Money> {
 
   const Money(this.minorUnits, this.currency);
 
-  /// Solo para pruebas y para leer de fuentes externas (CSV). El resto de la
-  /// app trabaja siempre con unidades menores.
+  /// Atajo para pruebas. **No sirve para importar datos reales.**
+  ///
+  /// Pasa por coma flotante, así que hereda sus errores: `1.005` se almacena
+  /// como `1.00499999...` y esto devuelve 100 céntimos, no 101. Para dos
+  /// decimales exactos (`24.50`, `19.99`) es seguro, porque el error queda
+  /// órdenes de magnitud por debajo del medio céntimo.
+  ///
+  /// La importación de CSV **no debe usar esto**: tiene que parsear la cadena
+  /// decimal a entero directamente, sin pasar por `double`.
   factory Money.fromUnits(double units, Currency currency) =>
       Money((units * currency.minorUnitsPerUnit).round(), currency);
 
   static Money zero(Currency currency) => Money(0, currency);
 
+  /// Suma acumulando con `+`, que es quien comprueba la divisa. Hacerlo con
+  /// un entero suelto y un control propio duplicaría esa comprobación, y la
+  /// copia duplicada no la ejercita ninguna prueba.
   static Money sum(Iterable<Money> items, Currency currency) {
-    var total = 0;
+    var total = zero(currency);
     for (final m in items) {
-      if (m.currency != currency) throw CurrencyMismatchError(currency, m.currency);
-      total += m.minorUnits;
+      total += m;
     }
-    return Money(total, currency);
+    return total;
   }
 
   Money operator +(Money other) =>
