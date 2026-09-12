@@ -3,13 +3,20 @@ import 'money.dart';
 
 /// «1.234,56 €». La división por 100 es exacta en coma flotante para
 /// cualquier cifra realista y solo se usa para presentar, nunca para calcular.
+///
+/// El menos de `intl` es un guion ASCII; aquí se cambia por el menos
+/// tipográfico (−, U+2212) para que un saldo negativo se vea igual venga de
+/// aquí o de [formatSigned]. Si no, en la misma pantalla conviven dos signos
+/// menos distintos: el de la lista de movimientos y el del saldo de arriba.
 String formatMoney(Money m, {String locale = 'es_ES'}) {
   final formatter = NumberFormat.currency(
     locale: locale,
     symbol: m.currency.symbol,
     decimalDigits: m.currency.decimalDigits,
   );
-  return formatter.format(m.minorUnits / m.currency.minorUnitsPerUnit);
+  return formatter
+      .format(m.minorUnits / m.currency.minorUnitsPerUnit)
+      .replaceFirst('-', '−');
 }
 
 /// Con signo explícito, para las listas de movimientos. Usa el menos

@@ -7,6 +7,12 @@ String civilDateOf(DateTime d) =>
     '${d.month.toString().padLeft(2, '0')}-'
     '${d.day.toString().padLeft(2, '0')}';
 
+/// Valida **solo la forma** (tres partes), no los rangos: `'2026-99-99'`
+/// devuelve 2034-06-07 sin quejarse, porque `DateTime` normaliza los meses y
+/// días fuera de rango rodando hacia delante. Basta mientras la entrada la
+/// genere la propia app, que es el caso en toda la Fase 1. La importación de
+/// CSV tendrá que envolverla con una validación de rangos y una comprobación
+/// de ida y vuelta, que además atrapa fechas imposibles como `2026-02-30`.
 DateTime parseCivilDate(String iso) {
   final parts = iso.split('-');
   if (parts.length != 3) throw FormatException('Fecha inválida: $iso');
