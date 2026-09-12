@@ -16,7 +16,7 @@ String formatMoney(Money m, {String locale = 'es_ES'}) {
   );
   return formatter
       .format(m.minorUnits / m.currency.minorUnitsPerUnit)
-      .replaceFirst('-', '−');
+      .replaceFirst('-', '\u2212');
 }
 
 /// Con signo explícito, para las listas de movimientos. Usa el menos
