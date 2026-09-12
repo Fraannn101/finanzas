@@ -632,6 +632,11 @@ class Account extends DataClass implements Insertable<Account> {
   final int initialBalanceMinor;
   final int? creditLimitMinor;
   final bool isArchived;
+
+  /// Orden manual, para una futura pantalla de reordenar. **No** es el orden
+  /// de los chips de la hoja de añadir: ese va por frecuencia de uso, que se
+  /// calcula contando movimientos (ver `mostUsed` en el repositorio). Hoy
+  /// nadie escribe aquí, así que todas las filas valen 0.
   final int sortOrder;
   final DateTime createdAt;
   const Account({

@@ -27,6 +27,10 @@ class Accounts extends Table {
   IntColumn get initialBalanceMinor => integer().withDefault(const Constant(0))();
   IntColumn get creditLimitMinor => integer().nullable()();
   BoolColumn get isArchived => boolean().withDefault(const Constant(false))();
+  /// Orden manual, para una futura pantalla de reordenar. **No** es el orden
+  /// de los chips de la hoja de añadir: ese va por frecuencia de uso, que se
+  /// calcula contando movimientos (ver `mostUsed` en el repositorio). Hoy
+  /// nadie escribe aquí, así que todas las filas valen 0.
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 }
@@ -83,6 +87,17 @@ class Transactions extends Table {
 
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
   DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();
+
+  /// El repositorio ya impide los importes negativos, pero esto lo garantiza
+  /// también para cualquier ruta futura que inserte sin pasar por él —la
+  /// importación de CSV, por ejemplo—. Se añade ahora porque ahora es una
+  /// línea: en SQLite, meter un CHECK en una tabla que ya tiene datos obliga
+  /// a recrearla y copiarla entera.
+  @override
+  List<String> get customConstraints => [
+        'CHECK (amount_minor >= 0)',
+        'CHECK (counter_amount_minor IS NULL OR counter_amount_minor >= 0)',
+      ];
 }
 
 /// `FxRateRow` para no chocar con `FxRate` de `core/fx.dart`.
