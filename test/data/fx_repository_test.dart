@@ -35,6 +35,12 @@ void main() {
     expect(resolved.isEstimated, isFalse);
   });
 
+  test('un domingo tampoco se marca estimado', () async {
+    await repo.save('2026-09-11', const FxRate(Currency.gbp, 117234500), source: 'ecb');
+    final resolved = await repo.rateFor(Currency.gbp, '2026-09-13'); // domingo
+    expect(resolved.isEstimated, isFalse);
+  });
+
   test('un día laborable sin tipo propio sí se marca estimado', () async {
     await repo.save('2026-09-10', const FxRate(Currency.gbp, 117234500), source: 'ecb');
     final resolved = await repo.rateFor(Currency.gbp, '2026-09-11'); // viernes

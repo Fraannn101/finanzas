@@ -1,4 +1,5 @@
 import 'package:drift/drift.dart';
+import '../../core/civil_date.dart';
 import '../../core/currency.dart';
 import '../../core/fx.dart';
 import '../db/database.dart';
@@ -92,7 +93,9 @@ class FxRepository {
   /// marcarán, porque no se pueden saber sin un calendario. Son unos nueve
   /// días al año; es una imprecisión asumida, no un descuido.
   static bool _isNonBusinessDay(String isoDate) {
-    final weekday = DateTime.parse(isoDate).weekday;
+    // `parseCivilDate` y no `DateTime.parse`: una sola puerta de entrada para
+    // las fechas del proyecto, con su limitación documentada en un solo sitio.
+    final weekday = parseCivilDate(isoDate).weekday;
     return weekday == DateTime.saturday || weekday == DateTime.sunday;
   }
 
