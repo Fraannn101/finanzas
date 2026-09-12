@@ -2115,6 +2115,36 @@ void main() {
     expect(await accounts.balanceOf(revolutGbp), const Money(50000, Currency.gbp));
   });
 
+  test('recalcula los movimientos guardados con un tipo prestado', () async {
+    // El viernes 11 no hay tipo propio, así que el gasto nace estimado.
+    final id = await repo.addExpense(
+      accountId: revolutGbp,
+      amountMinor: 10000,
+      categoryId: comida,
+      date: '2026-09-11',
+    );
+    expect((await repo.byId(id)).fxIsEstimated, isTrue);
+
+    // Llega el tipo real de ese viernes.
+    await fx.save('2026-09-11', const FxRate(Currency.gbp, 120000000), source: 'ecb');
+    expect(await repo.recomputeEstimated(), 1);
+
+    final tx = await repo.byId(id);
+    expect(tx.fxIsEstimated, isFalse);
+    expect(tx.fxRateToEurScaled, 120000000);
+    expect(tx.amountEurMinor, 12000); // 100,00 £ × 1,2
+  });
+
+  test('no toca los movimientos cuyo tipo real sigue sin llegar', () async {
+    await repo.addExpense(
+      accountId: revolutGbp,
+      amountMinor: 10000,
+      categoryId: comida,
+      date: '2026-09-11',
+    );
+    expect(await repo.recomputeEstimated(), 0);
+  });
+
   test('borrar un movimiento devuelve el saldo a su sitio', () async {
     final id = await repo.addExpense(
       accountId: revolutGbp,
