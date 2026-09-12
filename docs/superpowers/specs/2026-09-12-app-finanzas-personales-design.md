@@ -194,6 +194,8 @@ La hoja contiene, de arriba abajo:
 
 La conversión a euros redondea al céntimo más cercano, con el medio hacia arriba. Los informes suman los importes en euros ya redondeados de cada movimiento, de modo que el total mostrado siempre coincide con la suma de las líneas visibles.
 
+En importes negativos —el saldo de una tarjeta de crédito— el medio se redondea **alejándose de cero**, no hacia arriba: −100,5 céntimos da −101, no −100. Así una deuda nunca queda registrada por menos de lo que es. Es además la convención habitual de «medio hacia arriba» en software. Queda escrito aquí para que nadie lo «arregle» más adelante convirtiéndolo en un error de verdad.
+
 ## 7. Pruebas
 
 Desarrollo guiado por pruebas: la prueba primero. En una app donde un error de redondeo es dinero que no cuadra, es lo que separa confiar de no confiar en lo que ves.
