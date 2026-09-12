@@ -14,8 +14,12 @@ class FxRate {
   factory FxRate.identity(Currency currency) => FxRate(currency, scale);
 
   /// El BCE publica «unidades de divisa por euro». Invertimos la cotización.
+  ///
+  /// Se rechaza lo no finito además de lo negativo: `scale / infinity` daría
+  /// un tipo de 0 sin quejarse, y un tipo 0 convierte en cero silenciosamente
+  /// todos los importes de esa divisa.
   factory FxRate.fromEcbQuote(Currency currency, double unitsPerEuro) {
-    if (unitsPerEuro <= 0) {
+    if (unitsPerEuro <= 0 || !unitsPerEuro.isFinite) {
       throw ArgumentError('Cotización inválida para $currency: $unitsPerEuro');
     }
     return FxRate(currency, (scale / unitsPerEuro).round());

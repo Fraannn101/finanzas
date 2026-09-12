@@ -27,6 +27,13 @@ void main() {
     expect(rate.toEur(const Money(0, Currency.gbp)).minorUnits, 0);
   });
 
+  test('en negativo el medio se aleja de cero', () {
+    // Mismo empate exacto que la prueba anterior, con signo: -100,5 -> -101.
+    // Una deuda nunca se redondea a una cifra menor de la que es.
+    const rate = FxRate(Currency.usd, 100500000);
+    expect(rate.toEur(const Money(-100, Currency.usd)).minorUnits, -101);
+  });
+
   test('convertir una divisa que no es la del tipo es un error', () {
     const rate = FxRate(Currency.gbp, 117234500);
     expect(
