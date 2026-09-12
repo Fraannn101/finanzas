@@ -11,7 +11,7 @@ class NoFxRateAvailable implements Exception {
   @override
   String toString() =>
       'Sin tipo de cambio para ${currency.code}. Conéctate a internet una vez '
-      'o introdúcelo a mano.';
+      'para descargarlos.';
 }
 
 /// Un tipo resuelto para una fecha concreta. [isEstimated] indica que se ha
@@ -74,10 +74,26 @@ class FxRepository {
           ..limit(1))
         .getSingleOrNull();
     if (previous != null) {
-      return ResolvedRate(FxRate(currency, previous.rateToEurScaled), true);
+      return ResolvedRate(
+        FxRate(currency, previous.rateToEurScaled),
+        !_isNonBusinessDay(date),
+      );
     }
 
     throw NoFxRateAvailable(currency);
+  }
+
+  /// Sábado o domingo: el BCE no publica y el tipo del último día hábil es,
+  /// por diseño, **el correcto**, no una estimación provisional. Marcarlo
+  /// como estimado pondría el icono de reloj en dos de cada siete días y la
+  /// señal dejaría de significar nada.
+  ///
+  /// Los festivos de TARGET2 (Navidad, Año Nuevo, Viernes Santo) sí se
+  /// marcarán, porque no se pueden saber sin un calendario. Son unos nueve
+  /// días al año; es una imprecisión asumida, no un descuido.
+  static bool _isNonBusinessDay(String isoDate) {
+    final weekday = DateTime.parse(isoDate).weekday;
+    return weekday == DateTime.saturday || weekday == DateTime.sunday;
   }
 
   Future<String?> latestStoredDate() async {

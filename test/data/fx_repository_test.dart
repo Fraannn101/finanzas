@@ -28,12 +28,16 @@ void main() {
     expect(resolved.isEstimated, isFalse);
   });
 
-  test('usa el último tipo anterior y lo marca estimado', () async {
-    // Viernes
+  test('un sábado usa el tipo del viernes y NO lo marca estimado', () async {
     await repo.save('2026-09-11', const FxRate(Currency.gbp, 117234500), source: 'ecb');
-    // Sábado: el BCE no publica
-    final resolved = await repo.rateFor(Currency.gbp, '2026-09-12');
+    final resolved = await repo.rateFor(Currency.gbp, '2026-09-12'); // sábado
     expect(resolved.rate.scaled, 117234500);
+    expect(resolved.isEstimated, isFalse);
+  });
+
+  test('un día laborable sin tipo propio sí se marca estimado', () async {
+    await repo.save('2026-09-10', const FxRate(Currency.gbp, 117234500), source: 'ecb');
+    final resolved = await repo.rateFor(Currency.gbp, '2026-09-11'); // viernes
     expect(resolved.isEstimated, isTrue);
   });
 
