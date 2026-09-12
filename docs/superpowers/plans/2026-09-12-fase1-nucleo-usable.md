@@ -834,6 +834,13 @@ class Transactions extends Table {
   List<String> get customConstraints => [
         'CHECK (amount_minor >= 0)',
         'CHECK (counter_amount_minor IS NULL OR counter_amount_minor >= 0)',
+        // Sin esto, un `type` corrupto hace que el CASE del cálculo de saldos
+        // devuelva NULL, el COALESCE lo convierta en 0, y la cuenta muestre
+        // su saldo inicial como si no tuviera movimientos. Invisible.
+        "CHECK (type IN ('income', 'expense', 'transfer'))",
+        // Una transferencia a sí misma resta y suma sobre la misma cuenta, y
+        // solo cuadra si ambos importes coinciden —que entre divisas no pasa—.
+        'CHECK (counter_account_id IS NULL OR counter_account_id != account_id)',
       ];
 }
 
@@ -1121,9 +1128,76 @@ void main() {
             date: '2026-09-12',
           ));
     }
-    final orden = await repo.watchMostUsed().first;
+    // `since` explícito: si dependiera de la fecha de hoy, esta prueba
+    // empezaría a fallar sola a los 90 días de escribirla.
+    final orden = await repo.watchMostUsed(since: '2026-01-01').first;
     expect(orden.first.id, mucho);
     expect(orden.map((a) => a.id), contains(poco));
+  });
+
+  test('el uso reciente manda sobre el histórico', () async {
+    final antigua = await repo.create(
+      name: 'Efectivo',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final actual = await repo.create(
+      name: 'Revolut',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    Future<void> gasto(int cuenta, String fecha) =>
+        db.into(db.transactions).insert(TransactionsCompanion.insert(
+              type: TxType.expense,
+              accountId: cuenta,
+              amountMinor: 100,
+              currency: 'EUR',
+              fxRateToEurScaled: 100000000,
+              amountEurMinor: 100,
+              date: fecha,
+            ));
+
+    for (var i = 0; i < 10; i++) {
+      await gasto(antigua, '2024-01-15'); // mucho, pero viejo
+    }
+    await gasto(actual, '2026-09-10'); // poco, pero reciente
+
+    final orden = await repo.watchMostUsed(since: '2026-06-01').first;
+    expect(orden.first.id, actual);
+  });
+
+  test('una transferencia cuenta para las dos cuentas', () async {
+    final origen = await repo.create(
+      name: 'Origen',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final destino = await repo.create(
+      name: 'Destino',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final tercera = await repo.create(
+      name: 'Sin usar',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    await db.into(db.transactions).insert(TransactionsCompanion.insert(
+          type: TxType.transfer,
+          accountId: origen,
+          amountMinor: 1000,
+          currency: 'EUR',
+          fxRateToEurScaled: 100000000,
+          amountEurMinor: 1000,
+          date: '2026-09-12',
+          counterAccountId: Value(destino),
+          counterAmountMinor: const Value(1000),
+        ));
+
+    final orden = await repo.watchMostUsed(since: '2026-01-01').first;
+    // La transferencia sube a las dos, no solo al origen.
+    expect(orden.map((a) => a.id).take(2), containsAll([origen, destino]));
+    expect(orden.last.id, tercera);
   });
 
   test('permite cambiar la divisa solo si la cuenta está vacía', () async {
@@ -1203,38 +1277,59 @@ class AccountRepository {
   Future<Account> byId(int id) =>
       (db.select(db.accounts)..where((a) => a.id.equals(id))).getSingle();
 
+  /// El `id` como segundo criterio no es decorativo: `sortOrder` vale 0 en
+  /// todas las filas, y ordenar por una columna con todos los valores
+  /// iguales deja el orden a criterio del planificador de SQLite, que puede
+  /// cambiar al añadir un índice.
   Future<List<Account>> activeAccounts() => (db.select(db.accounts)
         ..where((a) => a.isArchived.equals(false))
-        ..orderBy([(a) => OrderingTerm(expression: a.sortOrder)]))
+        ..orderBy([
+          (a) => OrderingTerm(expression: a.sortOrder),
+          (a) => OrderingTerm(expression: a.id),
+        ]))
       .get();
 
   Stream<List<Account>> watchActiveAccounts() => (db.select(db.accounts)
         ..where((a) => a.isArchived.equals(false))
-        ..orderBy([(a) => OrderingTerm(expression: a.sortOrder)]))
+        ..orderBy([
+          (a) => OrderingTerm(expression: a.sortOrder),
+          (a) => OrderingTerm(expression: a.id),
+        ]))
       .watch();
 
-  /// Cuentas activas ordenadas por uso reciente: primero las que más
-  /// movimientos tienen, y las que no tienen ninguno detrás, por `id`.
+  /// Cuentas activas ordenadas por uso, para los chips de la hoja de añadir.
   ///
-  /// No se puede resolver con `sortOrder`, que es un valor fijo: la
-  /// frecuencia depende del historial y cambia sola según usas la app. Es la
-  /// consulta que alimenta los chips de la hoja de añadir.
-  Stream<List<Account>> watchMostUsed({int limit = 4}) => db
-      .customSelect(
-        '''
-        SELECT a.* FROM accounts a
-        LEFT JOIN transactions t
-          ON t.account_id = a.id OR t.counter_account_id = a.id
-        WHERE a.is_archived = 0
-        GROUP BY a.id
-        ORDER BY COUNT(t.id) DESC, a.id ASC
-        LIMIT ?1
-        ''',
-        variables: [Variable<int>(limit)],
-        readsFrom: {db.accounts, db.transactions},
-      )
-      .watch()
-      .map((rows) => rows.map((r) => db.accounts.map(r.data)).toList());
+  /// Cuenta primero los movimientos desde [since] (90 días por defecto) y usa
+  /// el total histórico solo para deshacer empates. «Frecuencia» es un ritmo,
+  /// no un acumulado: contando toda la vida, una cuenta de efectivo con 500
+  /// movimientos de hace dos años seguiría por delante de la que usas cada
+  /// día, y lo haría para siempre. El total histórico como segundo criterio
+  /// evita que, al estrenar la app o tras un parón, el orden quede aleatorio.
+  ///
+  /// No se puede resolver con `sortOrder`, que es un valor fijo.
+  Stream<List<Account>> watchMostUsed({int limit = 4, String? since}) {
+    final cutoff = since ??
+        civilDateOf(DateTime.now().subtract(const Duration(days: 90)));
+    return db
+        .customSelect(
+          '''
+          SELECT a.*,
+                 COUNT(t.id) AS all_time,
+                 COUNT(CASE WHEN t.date >= ?2 THEN 1 END) AS recent
+          FROM accounts a
+          LEFT JOIN transactions t
+            ON t.account_id = a.id OR t.counter_account_id = a.id
+          WHERE a.is_archived = 0
+          GROUP BY a.id
+          ORDER BY recent DESC, all_time DESC, a.id ASC
+          LIMIT ?1
+          ''',
+          variables: [Variable<int>(limit), Variable<String>(cutoff)],
+          readsFrom: {db.accounts, db.transactions},
+        )
+        .watch()
+        .map((rows) => rows.map((r) => db.accounts.map(r.data)).toList());
+  }
 
   Future<void> archive(int id) => (db.update(db.accounts)
         ..where((a) => a.id.equals(id)))
@@ -1401,6 +1496,31 @@ void main() {
     await insertTx(type: TxType.expense, accountId: card, amountMinor: 31240, currency: 'EUR');
     expect(await repo.balanceOf(card), const Money(-31240, Currency.eur));
   });
+
+  test('un contra-importe en un gasto no suma a la otra cuenta', () async {
+    // Fila corrupta: un gasto no debería llevar cuenta destino. El filtro
+    // `AND t.type = 'transfer'` del segundo subconsulta existe justo para
+    // ignorarla. Sin esta prueba, borrar ese filtro no rompe nada.
+    final origen = await repo.create(
+      name: 'Origen',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final otra = await repo.create(
+      name: 'Otra',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    await insertTx(
+      type: TxType.expense,
+      accountId: origen,
+      amountMinor: 5000,
+      currency: 'EUR',
+      counterAccountId: otra,
+      counterAmountMinor: 5000,
+    );
+    expect(await repo.balanceOf(otra), Money.zero(Currency.eur));
+  });
 }
 ```
 
@@ -1441,6 +1561,9 @@ Y estos métodos dentro de `class AccountRepository`:
     FROM accounts a
   ''';
 
+  /// A propósito **sin** filtrar por archivadas: se pide el saldo de una
+  /// cuenta concreta que ya conoces, y una archivada sigue teniendo saldo.
+  /// El filtro de [watchBalances] es otra cosa: ahí se listan las activas.
   Future<Money> balanceOf(int accountId) async {
     final rows = await db
         .customSelect(
@@ -2791,6 +2914,8 @@ git commit -m "feat: add calculator-style amount input"
 **Files:**
 - Create: `lib/features/transactions/add_sheet.dart`
 - Modify: `lib/app/providers.dart`
+
+**El orden de los chips se congela al abrir la hoja.** `watchMostUsed` es un stream que se recalcula con cada escritura, y eso es correcto para su contrato. Pero si la hoja se enganchara al stream mientras está abierta, un movimiento que entre por otro lado —un recurrente automático, una importación— puede reordenar los chips **entre que miras y tocas**, y el gasto acaba en la cuenta equivocada sin que nada falle. Se toma la primera emisión al abrir y se mantiene hasta cerrar.
 
 - [ ] **Step 1: Escribir la hoja**
 
