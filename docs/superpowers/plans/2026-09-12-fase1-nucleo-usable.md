@@ -603,6 +603,12 @@ String civilDateOf(DateTime d) =>
     '${d.month.toString().padLeft(2, '0')}-'
     '${d.day.toString().padLeft(2, '0')}';
 
+/// Valida **solo la forma** (tres partes), no los rangos: `'2026-99-99'`
+/// devuelve 2034-06-07 sin quejarse, porque `DateTime` normaliza los meses y
+/// días fuera de rango rodando hacia delante. Basta mientras la entrada la
+/// genere la propia app, que es el caso en toda la Fase 1. La importación de
+/// CSV tendrá que envolverla con una validación de rangos y una comprobación
+/// de ida y vuelta, que además atrapa fechas imposibles como `2026-02-30`.
 DateTime parseCivilDate(String iso) {
   final parts = iso.split('-');
   if (parts.length != 3) throw FormatException('Fecha inválida: $iso');
@@ -655,8 +661,8 @@ void main() {
     expect(formatMoney(const Money(2450, Currency.gbp)), '24,50 £');
   });
 
-  test('formatea negativos con el signo delante', () {
-    expect(formatMoney(const Money(-31240, Currency.eur)), '-312,40 €');
+  test('formatea negativos con el menos tipográfico', () {
+    expect(formatMoney(const Money(-31240, Currency.eur)), '−312,40 €');
   });
 
   test('con signo explícito para las listas de movimientos', () {
@@ -680,13 +686,20 @@ import 'money.dart';
 
 /// «1.234,56 €». La división por 100 es exacta en coma flotante para
 /// cualquier cifra realista y solo se usa para presentar, nunca para calcular.
+///
+/// El menos de `intl` es un guion ASCII; aquí se cambia por el menos
+/// tipográfico (−, U+2212) para que un saldo negativo se vea igual venga de
+/// aquí o de [formatSigned]. Si no, en la misma pantalla conviven dos signos
+/// menos distintos: el de la lista de movimientos y el del saldo de arriba.
 String formatMoney(Money m, {String locale = 'es_ES'}) {
   final formatter = NumberFormat.currency(
     locale: locale,
     symbol: m.currency.symbol,
     decimalDigits: m.currency.decimalDigits,
   );
-  return formatter.format(m.minorUnits / m.currency.minorUnitsPerUnit);
+  return formatter
+      .format(m.minorUnits / m.currency.minorUnitsPerUnit)
+      .replaceFirst('-', '−');
 }
 
 /// Con signo explícito, para las listas de movimientos. Usa el menos
@@ -702,7 +715,7 @@ String formatSigned(Money m, {required bool negate, String locale = 'es_ES'}) {
 Run: `flutter test test/core/formatting_test.dart`
 Expected: PASS, 4 pruebas.
 
-Si el formato de euros falla por el espacio entre número y símbolo, imprime el valor real con `print(formatMoney(...))` y ajusta la cadena esperada: `intl` usa un espacio duro (U+00A0), no un espacio normal. Corrige la **prueba**, no el código.
+`intl` separa el número del símbolo con un **espacio duro** (U+00A0), no con un espacio normal. Las cadenas esperadas tienen que escribirlo como ` `, con el escape a la vista: pegar el carácter invisible funciona igual, pero es indistinguible de un espacio normal al leer el diff y cualquier editor que normalice espacios lo rompe sin dejar rastro. Lo mismo con `−` para el menos.
 
 - [ ] **Step 5: Commit**
 
