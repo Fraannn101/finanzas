@@ -97,6 +97,13 @@ class Transactions extends Table {
   List<String> get customConstraints => [
         'CHECK (amount_minor >= 0)',
         'CHECK (counter_amount_minor IS NULL OR counter_amount_minor >= 0)',
+        // Sin esto, un `type` corrupto hace que el CASE del cálculo de saldos
+        // devuelva NULL, el COALESCE lo convierta en 0, y la cuenta muestre
+        // su saldo inicial como si no tuviera movimientos. Invisible.
+        "CHECK (type IN ('income', 'expense', 'transfer'))",
+        // Una transferencia a sí misma resta y suma sobre la misma cuenta, y
+        // solo cuadra si ambos importes coinciden —que entre divisas no pasa—.
+        'CHECK (counter_account_id IS NULL OR counter_account_id != account_id)',
       ];
 }
 
