@@ -7,11 +7,15 @@ class Currency {
   final String symbol;
   final int decimalDigits;
 
-  const Currency(this.code, this.symbol, this.decimalDigits);
+  /// Privado a propósito: el conjunto de divisas es cerrado. Si cualquiera
+  /// pudiera construir una, `Currency('EUR', 'X', 0)` sería `==` a
+  /// [Currency.eur] —porque la igualdad va por código— y se colaría hasta el
+  /// formateo, imprimiendo «123456 €» en lugar de «1.234,56 €».
+  const Currency._(this.code, this.symbol, this.decimalDigits);
 
-  static const eur = Currency('EUR', '€', 2);
-  static const gbp = Currency('GBP', '£', 2);
-  static const usd = Currency('USD', r'$', 2);
+  static const eur = Currency._('EUR', '€', 2);
+  static const gbp = Currency._('GBP', '£', 2);
+  static const usd = Currency._('USD', r'$', 2);
 
   static const all = <Currency>[eur, gbp, usd];
 

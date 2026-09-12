@@ -11,7 +11,19 @@ void main() {
     expect(() => Currency.byCode('JPY'), throwsArgumentError);
   });
 
-  test('dos instancias del mismo código son iguales', () {
-    expect(const Currency('EUR', '€', 2), Currency.eur);
+  test('divisas distintas no son iguales', () {
+    expect(Currency.eur, isNot(Currency.gbp));
+  });
+
+  test('buscar por código devuelve la instancia canónica', () {
+    expect(identical(Currency.byCode('EUR'), Currency.eur), isTrue);
+  });
+
+  test('calcula las unidades menores por unidad', () {
+    expect(Currency.eur.minorUnitsPerUnit, 100);
+  });
+
+  test('se imprime como su código', () {
+    expect(Currency.gbp.toString(), 'GBP');
   });
 }
