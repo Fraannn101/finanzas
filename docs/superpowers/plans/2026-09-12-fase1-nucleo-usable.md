@@ -763,6 +763,11 @@ class Accounts extends Table {
   IntColumn get initialBalanceMinor => integer().withDefault(const Constant(0))();
   IntColumn get creditLimitMinor => integer().nullable()();
   BoolColumn get isArchived => boolean().withDefault(const Constant(false))();
+
+  /// Orden manual, para una futura pantalla de reordenar. **No** es el orden
+  /// de los chips de la hoja de añadir: ese va por frecuencia de uso, que se
+  /// calcula contando movimientos (ver `mostUsed` en el repositorio). Hoy
+  /// nadie escribe aquí, así que todas las filas valen 0.
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 }
@@ -819,6 +824,17 @@ class Transactions extends Table {
 
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
   DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();
+
+  /// El repositorio ya impide los importes negativos, pero esto lo garantiza
+  /// también para cualquier ruta futura que inserte sin pasar por él —la
+  /// importación de CSV, por ejemplo—. Se añade ahora porque ahora es una
+  /// línea: en SQLite, meter un CHECK en una tabla que ya tiene datos obliga
+  /// a recrearla y copiarla entera.
+  @override
+  List<String> get customConstraints => [
+        'CHECK (amount_minor >= 0)',
+        'CHECK (counter_amount_minor IS NULL OR counter_amount_minor >= 0)',
+      ];
 }
 
 /// `FxRateRow` para no chocar con `FxRate` de `core/fx.dart`.
@@ -1082,6 +1098,34 @@ void main() {
     expect(await repo.byId(id), isNotNull);
   });
 
+  test('ordena por uso real, no por sortOrder', () async {
+    final poco = await repo.create(
+      name: 'Poco usada',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final mucho = await repo.create(
+      name: 'Muy usada',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    // Ambas tienen sortOrder 0: si el orden viniera de ahí, sería arbitrario.
+    for (var i = 0; i < 3; i++) {
+      await db.into(db.transactions).insert(TransactionsCompanion.insert(
+            type: TxType.expense,
+            accountId: mucho,
+            amountMinor: 100,
+            currency: 'EUR',
+            fxRateToEurScaled: 100000000,
+            amountEurMinor: 100,
+            date: '2026-09-12',
+          ));
+    }
+    final orden = await repo.watchMostUsed().first;
+    expect(orden.first.id, mucho);
+    expect(orden.map((a) => a.id), contains(poco));
+  });
+
   test('permite cambiar la divisa solo si la cuenta está vacía', () async {
     final id = await repo.create(
       name: 'Recién creada',
@@ -1168,6 +1212,29 @@ class AccountRepository {
         ..where((a) => a.isArchived.equals(false))
         ..orderBy([(a) => OrderingTerm(expression: a.sortOrder)]))
       .watch();
+
+  /// Cuentas activas ordenadas por uso reciente: primero las que más
+  /// movimientos tienen, y las que no tienen ninguno detrás, por `id`.
+  ///
+  /// No se puede resolver con `sortOrder`, que es un valor fijo: la
+  /// frecuencia depende del historial y cambia sola según usas la app. Es la
+  /// consulta que alimenta los chips de la hoja de añadir.
+  Stream<List<Account>> watchMostUsed({int limit = 4}) => db
+      .customSelect(
+        '''
+        SELECT a.* FROM accounts a
+        LEFT JOIN transactions t
+          ON t.account_id = a.id OR t.counter_account_id = a.id
+        WHERE a.is_archived = 0
+        GROUP BY a.id
+        ORDER BY COUNT(t.id) DESC, a.id ASC
+        LIMIT ?1
+        ''',
+        variables: [Variable<int>(limit)],
+        readsFrom: {db.accounts, db.transactions},
+      )
+      .watch()
+      .map((rows) => rows.map((r) => db.accounts.map(r.data)).toList());
 
   Future<void> archive(int id) => (db.update(db.accounts)
         ..where((a) => a.id.equals(id)))
@@ -2562,6 +2629,23 @@ class CategoryRepository {
         ..orderBy([(c) => OrderingTerm(expression: c.sortOrder)]))
       .get();
 
+  /// Categorías de un tipo ordenadas por uso real, para los chips de la hoja
+  /// de añadir. Las que nunca has usado quedan detrás, en el orden sembrado.
+  Stream<List<Category>> watchMostUsed(CategoryKind kind) => db
+      .customSelect(
+        '''
+        SELECT c.* FROM categories c
+        LEFT JOIN transactions t ON t.category_id = c.id
+        WHERE c.is_archived = 0 AND c.kind = ?1
+        GROUP BY c.id
+        ORDER BY COUNT(t.id) DESC, c.sort_order ASC
+        ''',
+        variables: [Variable<String>(kind.name)],
+        readsFrom: {db.categories, db.transactions},
+      )
+      .watch()
+      .map((rows) => rows.map((r) => db.categories.map(r.data)).toList());
+
   Future<int> create({
     required String name,
     required CategoryKind kind,
@@ -3928,4 +4012,13 @@ Consecuencia de dejar Ajustes para el Plan 3: en la Fase 1 se trabaja con las tr
 
 Las columnas `recurringRuleId`, `importBatchId` y `dedupeHash` ya existen en `transactions` desde la tarea 8, de modo que ninguno de los dos planes siguientes necesita migrar datos.
 
-**Nota para el Plan 2:** será el primero que suba `schemaVersion` a 2. Ahí es donde toca implementar la copia automática previa a la migración que pide la especificación; en la Fase 1 no aplica, porque solo existe la creación inicial del esquema.
+**Notas para el Plan 2**
+
+Será el primero que suba `schemaVersion` a 2. Ahí es donde toca implementar la copia automática previa a la migración que pide la especificación; en la Fase 1 no aplica, porque solo existe la creación inicial del esquema.
+
+Dos detalles que ahorrarán un rato a quien lo escriba:
+
+- **La copia va como primera instrucción dentro de `onUpgrade`, no en `beforeOpen`.** Drift ejecuta `beforeOpen` *después* de `onCreate`/`onUpgrade`, así que una copia hecha ahí guardaría la base ya migrada, que es justo lo que no sirve.
+- **`_seedCategories` solo corre en `onCreate`.** Quien añada una categoría por defecto en una versión futura tiene que insertarla también desde `onUpgrade`; a quien ya tenga la app instalada no le va a aparecer sola.
+
+**Sobre los índices.** No hay ninguno más allá de las claves primarias, y es deliberado. Las consultas de saldo y de rango de fechas recorren la tabla entera, lo cual a unos pocos miles de movimientos al año es imperceptible: el problema empezaría alrededor de las 50.000-100.000 filas, que a este ritmo son décadas. Añadir un índice más adelante es una operación barata y no destructiva, al contrario que añadir un `CHECK`. Revisarlo si `transactions` se acerca a esa cifra o si se nota retraso al guardar.
