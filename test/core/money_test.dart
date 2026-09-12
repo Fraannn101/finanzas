@@ -39,6 +39,22 @@ void main() {
   });
 
   test('la suma de una lista vacía es cero en la divisa dada', () {
-    expect(Money.sum(const [], Currency.usd).minorUnits, 0);
+    expect(Money.sum(const [], Currency.usd), Money.zero(Currency.usd));
+  });
+
+  test('sumar una lista con divisas mezcladas es un error', () {
+    expect(
+      () => Money.sum(
+        [const Money(100, Currency.eur), const Money(100, Currency.gbp)],
+        Currency.eur,
+      ),
+      throwsA(isA<CurrencyMismatchError>()),
+    );
+  });
+
+  test('valor absoluto, negación y cero', () {
+    expect(const Money(-5230, Currency.eur).abs, const Money(5230, Currency.eur));
+    expect((-const Money(100, Currency.gbp)).minorUnits, -100);
+    expect(Money.zero(Currency.usd).isZero, isTrue);
   });
 }

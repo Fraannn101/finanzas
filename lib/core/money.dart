@@ -21,20 +21,29 @@ class Money implements Comparable<Money> {
 
   const Money(this.minorUnits, this.currency);
 
-  /// Solo para pruebas y para leer de fuentes externas (CSV). El resto de la
-  /// app trabaja siempre con unidades menores.
+  /// Atajo para pruebas. **No sirve para importar datos reales.**
+  ///
+  /// Pasa por coma flotante, así que hereda sus errores: `1.005` se almacena
+  /// como `1.00499999...` y esto devuelve 100 céntimos, no 101. Para dos
+  /// decimales exactos (`24.50`, `19.99`) es seguro, porque el error queda
+  /// órdenes de magnitud por debajo del medio céntimo.
+  ///
+  /// La importación de CSV **no debe usar esto**: tiene que parsear la cadena
+  /// decimal a entero directamente, sin pasar por `double`.
   factory Money.fromUnits(double units, Currency currency) =>
       Money((units * currency.minorUnitsPerUnit).round(), currency);
 
   static Money zero(Currency currency) => Money(0, currency);
 
+  /// Suma acumulando con `+`, que es quien comprueba la divisa. Hacerlo con
+  /// un entero suelto y un control propio duplicaría esa comprobación, y la
+  /// copia duplicada no la ejercita ninguna prueba.
   static Money sum(Iterable<Money> items, Currency currency) {
-    var total = 0;
+    var total = zero(currency);
     for (final m in items) {
-      if (m.currency != currency) throw CurrencyMismatchError(currency, m.currency);
-      total += m.minorUnits;
+      total += m;
     }
-    return Money(total, currency);
+    return total;
   }
 
   Money operator +(Money other) =>
