@@ -1650,12 +1650,16 @@ void main() {
     expect(resolved.isEstimated, isFalse);
   });
 
-  test('usa el último tipo anterior y lo marca estimado', () async {
-    // Viernes
+  test('un sábado usa el tipo del viernes y NO lo marca estimado', () async {
     await repo.save('2026-09-11', const FxRate(Currency.gbp, 117234500), source: 'ecb');
-    // Sábado: el BCE no publica
-    final resolved = await repo.rateFor(Currency.gbp, '2026-09-12');
+    final resolved = await repo.rateFor(Currency.gbp, '2026-09-12'); // sábado
     expect(resolved.rate.scaled, 117234500);
+    expect(resolved.isEstimated, isFalse);
+  });
+
+  test('un día laborable sin tipo propio sí se marca estimado', () async {
+    await repo.save('2026-09-10', const FxRate(Currency.gbp, 117234500), source: 'ecb');
+    final resolved = await repo.rateFor(Currency.gbp, '2026-09-11'); // viernes
     expect(resolved.isEstimated, isTrue);
   });
 
@@ -1697,7 +1701,7 @@ class NoFxRateAvailable implements Exception {
   @override
   String toString() =>
       'Sin tipo de cambio para ${currency.code}. Conéctate a internet una vez '
-      'o introdúcelo a mano.';
+      'para descargarlos.';
 }
 
 /// Un tipo resuelto para una fecha concreta. [isEstimated] indica que se ha
@@ -1760,10 +1764,26 @@ class FxRepository {
           ..limit(1))
         .getSingleOrNull();
     if (previous != null) {
-      return ResolvedRate(FxRate(currency, previous.rateToEurScaled), true);
+      return ResolvedRate(
+        FxRate(currency, previous.rateToEurScaled),
+        !_isNonBusinessDay(date),
+      );
     }
 
     throw NoFxRateAvailable(currency);
+  }
+
+  /// Sábado o domingo: el BCE no publica y el tipo del último día hábil es,
+  /// por diseño, **el correcto**, no una estimación provisional. Marcarlo
+  /// como estimado pondría el icono de reloj en dos de cada siete días y la
+  /// señal dejaría de significar nada.
+  ///
+  /// Los festivos de TARGET2 (Navidad, Año Nuevo, Viernes Santo) sí se
+  /// marcarán, porque no se pueden saber sin un calendario. Son unos nueve
+  /// días al año; es una imprecisión asumida, no un descuido.
+  static bool _isNonBusinessDay(String isoDate) {
+    final weekday = DateTime.parse(isoDate).weekday;
+    return weekday == DateTime.saturday || weekday == DateTime.sunday;
   }
 
   Future<String?> latestStoredDate() async {
@@ -1839,7 +1859,48 @@ void main() {
   test('un XML sin cotizaciones es un error de formato', () {
     expect(() => parseEcbDaily('<vacio/>'), throwsFormatException);
   });
+
+  test('lee los atributos en cualquier orden', () {
+    const alReves = '''
+<Cube time="2026-09-11">
+  <Cube rate="0.85300" currency="GBP"/>
+</Cube>''';
+    final rates = parseEcbDaily(alReves).rates;
+    expect(rates.single.currency, Currency.gbp);
+  });
+
+  test('refresh descarga, guarda y no toca la red en las pruebas', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final repo = FxRepository(db);
+    final client = MockClient((_) async => http.Response(_xml, 200));
+
+    expect(await EcbFxService(repo, client: client).refresh(), isTrue);
+    final resolved = await repo.rateFor(Currency.gbp, '2026-09-11');
+    expect(resolved.isEstimated, isFalse);
+    expect(resolved.rate.scaled, closeTo(117233294, 2));
+  });
+
+  test('refresh devuelve false si el servicio falla', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final client = MockClient((_) async => http.Response('caído', 503));
+    expect(await EcbFxService(FxRepository(db), client: client).refresh(), isFalse);
+  });
 }
+```
+
+Los dos últimos necesitan estos imports añadidos al fichero de prueba:
+
+```dart
+import 'package:drift/native.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:finanzas/data/db/database.dart';
+import 'package:finanzas/data/repositories/fx_repository.dart';
+```
+
+`MockClient` viene dentro del paquete `http` que ya está instalado: no hace falta añadir nada. Sin estas dos pruebas, `refresh()` y el lote `DoUpdate` de `saveAll` no los ejercita nadie —solo existen en producción—.
 ```
 
 - [ ] **Step 2: Ejecutar la prueba para verla fallar**
@@ -1865,22 +1926,37 @@ class EcbDaily {
 }
 
 final _dateRe = RegExp(r'time="(\d{4}-\d{2}-\d{2})"');
-final _rateRe = RegExp(r'currency="([A-Z]{3})"\s+rate="([\d.]+)"');
+
+/// Se localiza cada etiqueta `<Cube .../>` y luego se leen sus atributos por
+/// separado, sin depender del orden. Una expresión que exigiera
+/// `currency="..." rate="..."` pegados dejaría de encontrar la divisa —en
+/// silencio, sin error— el día que el BCE cambie el orden o meta un atributo
+/// nuevo entre medias.
+final _cubeRe = RegExp(r'<Cube\s+([^>]*?)/>');
+final _attrRe = RegExp(r'(\w+)="([^"]*)"');
 
 /// Convierte el XML diario del BCE en tipos «euros por unidad».
 EcbDaily parseEcbDaily(String xml) {
   final dateMatch = _dateRe.firstMatch(xml);
-  final matches = _rateRe.allMatches(xml).toList();
-  if (dateMatch == null || matches.isEmpty) {
+  if (dateMatch == null) {
     throw const FormatException('El XML del BCE no tiene el formato esperado');
   }
 
   final supported = Currency.all.map((c) => c.code).toSet();
   final rates = <FxRate>[];
-  for (final m in matches) {
-    final code = m.group(1)!;
-    if (!supported.contains(code)) continue;
-    rates.add(FxRate.fromEcbQuote(Currency.byCode(code), double.parse(m.group(2)!)));
+  for (final cube in _cubeRe.allMatches(xml)) {
+    final attrs = <String, String>{
+      for (final a in _attrRe.allMatches(cube.group(1)!))
+        a.group(1)!: a.group(2)!,
+    };
+    final code = attrs['currency'];
+    final quote = attrs['rate'];
+    if (code == null || quote == null || !supported.contains(code)) continue;
+    rates.add(FxRate.fromEcbQuote(Currency.byCode(code), double.parse(quote)));
+  }
+
+  if (rates.isEmpty) {
+    throw const FormatException('El XML del BCE no tiene el formato esperado');
   }
   return EcbDaily(dateMatch.group(1)!, rates);
 }
@@ -1896,17 +1972,25 @@ class EcbFxService {
       : client = client ?? http.Client();
 
   /// Descarga los tipos del día y los guarda. Devuelve `false` si no se pudo
-  /// (sin conexión, servicio caído): la app sigue funcionando con lo que tenga.
+  /// (sin conexión, servicio caído, XML ilegible): la app sigue funcionando
+  /// con lo que tenga.
+  ///
+  /// Un fallo al **escribir** sí se propaga. Que no haya red es normal y se
+  /// arregla solo; que la base de datos local no acepte una escritura no se
+  /// arregla reintentando, y devolver el mismo `false` lo disfrazaría de
+  /// problema de cobertura.
   Future<bool> refresh() async {
+    final EcbDaily daily;
     try {
-      final response = await client.get(_endpoint).timeout(const Duration(seconds: 10));
+      final response =
+          await client.get(_endpoint).timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) return false;
-      final daily = parseEcbDaily(response.body);
-      await repo.saveAll(daily.date, daily.rates, source: 'ecb');
-      return true;
+      daily = parseEcbDaily(response.body);
     } catch (_) {
       return false;
     }
+    await repo.saveAll(daily.date, daily.rates, source: 'ecb');
+    return true;
   }
 }
 ```
@@ -2139,6 +2223,42 @@ class TransactionRepository {
 
   Future<void> delete(int id) =>
       (db.delete(db.transactions)..where((t) => t.id.equals(id))).go();
+
+  /// Rehace la conversión a euros de los movimientos que se guardaron con un
+  /// tipo prestado de otro día, ahora que puede haber llegado el de verdad.
+  ///
+  /// Sin esto, la especificación promete algo que nadie cumple: un gasto
+  /// apuntado sin cobertura se quedaría marcado como estimado para siempre,
+  /// aunque el tipo correcto se descargue cinco minutos después. Se llama
+  /// después de cada descarga que haya ido bien.
+  Future<int> recomputeEstimated() async {
+    final pending = await (db.select(db.transactions)
+          ..where((t) => t.fxIsEstimated.equals(true)))
+        .get();
+
+    var fixed = 0;
+    for (final tx in pending) {
+      final currency = Currency.byCode(tx.currency);
+      final ResolvedRate resolved;
+      try {
+        resolved = await fx.rateFor(currency, tx.date);
+      } on NoFxRateAvailable {
+        continue; // sigue sin haber nada mejor
+      }
+      if (resolved.isEstimated) continue; // el tipo real aún no ha llegado
+
+      final eur = resolved.rate.toEur(Money(tx.amountMinor, currency));
+      await (db.update(db.transactions)..where((t) => t.id.equals(tx.id)))
+          .write(TransactionsCompanion(
+        fxRateToEurScaled: Value(resolved.rate.scaled),
+        amountEurMinor: Value(eur.minorUnits),
+        fxIsEstimated: const Value(false),
+        updatedAt: Value(DateTime.now()),
+      ));
+      fixed++;
+    }
+    return fixed;
+  }
 
   static void _requirePositive(int amountMinor) {
     if (amountMinor <= 0) {
@@ -2580,8 +2700,15 @@ final ecbServiceProvider =
     Provider((ref) => EcbFxService(ref.watch(fxRepoProvider)));
 
 /// Se lanza una vez al arrancar. Si falla, la app sigue con lo que tenga.
-final fxRefreshProvider = FutureProvider<bool>(
-    (ref) => ref.watch(ecbServiceProvider).refresh());
+///
+/// Cuando la descarga va bien, se rehacen los movimientos que se guardaron
+/// con un tipo prestado: es el único momento en que puede haber llegado el
+/// tipo real que les faltaba.
+final fxRefreshProvider = FutureProvider<bool>((ref) async {
+  final ok = await ref.watch(ecbServiceProvider).refresh();
+  if (ok) await ref.watch(transactionRepoProvider).recomputeEstimated();
+  return ok;
+});
 
 final accountsProvider = StreamProvider(
     (ref) => ref.watch(accountRepoProvider).watchActiveAccounts());
