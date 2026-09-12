@@ -35,6 +35,12 @@ class Currency {
     return n;
   }
 
+  /// Con el constructor privado, la igualdad por código y la igualdad por
+  /// identidad coinciden siempre: solo existen las tres instancias de [all].
+  /// Se mantiene explícita de todas formas porque documenta qué significa
+  /// «la misma divisa», que es de lo que depende `Money` para negarse a sumar
+  /// libras con euros. Si algún día se añade una fábrica de divisas, esta
+  /// línea sigue siendo correcta; la identidad dejaría de serlo en silencio.
   @override
   bool operator ==(Object other) => other is Currency && other.code == code;
 
