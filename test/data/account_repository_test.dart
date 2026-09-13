@@ -162,6 +162,12 @@ void main() {
     expect(orden.last.id, tercera);
   });
 
+  test('encuentra un banco existente por su nombre', () async {
+    final id = await repo.createInstitution(name: 'Revolut');
+    expect(await repo.institutionByName('Revolut'), id);
+    expect(await repo.institutionByName('Otro'), isNull);
+  });
+
   test('permite cambiar la divisa solo si la cuenta está vacía', () async {
     final id = await repo.create(
       name: 'Recién creada',

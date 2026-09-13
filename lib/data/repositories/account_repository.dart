@@ -24,6 +24,16 @@ class AccountRepository {
             InstitutionsCompanion.insert(name: name, icon: Value(icon)),
           );
 
+  /// Busca un banco por nombre exacto, para no duplicarlo al dar de alta la
+  /// segunda cuenta del mismo sitio.
+  Future<int?> institutionByName(String name) async {
+    final row = await (db.select(db.institutions)
+          ..where((i) => i.name.equals(name))
+          ..limit(1))
+        .getSingleOrNull();
+    return row?.id;
+  }
+
   Future<int> create({
     required String name,
     required Currency currency,
