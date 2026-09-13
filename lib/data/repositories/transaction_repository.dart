@@ -193,6 +193,17 @@ class TransactionRepository {
     return Money(row.read(sum) ?? 0, Currency.eur);
   }
 
+  Stream<List<Txn>> watchBetween({required String from, required String to}) =>
+      (db.select(db.transactions)
+            ..where((t) =>
+                t.date.isBiggerOrEqualValue(from) &
+                t.date.isSmallerOrEqualValue(to))
+            ..orderBy([
+              (t) => OrderingTerm(expression: t.date, mode: OrderingMode.desc),
+              (t) => OrderingTerm(expression: t.id, mode: OrderingMode.desc),
+            ]))
+          .watch();
+
   static void _requirePositive(int amountMinor) {
     if (amountMinor <= 0) {
       throw ArgumentError('El importe debe ser mayor que cero: $amountMinor');

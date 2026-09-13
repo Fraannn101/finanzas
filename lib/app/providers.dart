@@ -3,6 +3,7 @@ import '../core/civil_date.dart';
 import '../core/money.dart';
 import '../data/db/database.dart';
 import '../data/repositories/account_repository.dart';
+import '../data/repositories/category_repository.dart';
 import '../data/repositories/fx_repository.dart';
 import '../data/repositories/transaction_repository.dart';
 import '../data/services/ecb_fx_service.dart';
@@ -51,4 +52,18 @@ final netWorthProvider = FutureProvider<Money>((ref) async {
   return ref
       .watch(accountRepoProvider)
       .netWorthEur(ref.watch(fxRepoProvider), todayCivil());
+});
+
+final categoryRepoProvider =
+    Provider((ref) => CategoryRepository(ref.watch(dbProvider)));
+
+final categoriesProvider = StreamProvider(
+    (ref) => ref.watch(categoryRepoProvider).watchActive());
+
+final monthTransactionsProvider = StreamProvider((ref) {
+  final now = DateTime.now();
+  return ref.watch(transactionRepoProvider).watchBetween(
+        from: firstDayOfMonth(now),
+        to: lastDayOfMonth(now),
+      );
 });
