@@ -250,7 +250,11 @@ class _AddSheetState extends ConsumerState<AddSheet> {
   /// entraron entre los cuatro chips más usados.
   Future<void> _pickFromAll(ValueChanged<int> onPick) async {
     final all = await ref.read(accountRepoProvider).activeAccounts();
-    final balances = ref.read(balancesProvider).value ?? const <int, Money>{};
+    // Se consulta el saldo en lugar de leer `balancesProvider`: en un arranque
+    // en frío ese stream todavía no ha emitido, y el valor por defecto pintaría
+    // 0,00 € en cuentas que tienen dinero. Un cero falso en una app de finanzas
+    // es peor que no enseñar nada.
+    final balances = await ref.read(accountRepoProvider).watchBalances().first;
     if (!mounted) return;
 
     final chosen = await showModalBottomSheet<int>(
