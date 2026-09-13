@@ -5,6 +5,7 @@ import '../../core/currency.dart';
 import '../../core/money.dart';
 import '../db/database.dart';
 import '../db/tables.dart';
+import 'fx_repository.dart';
 
 /// Una institución con sus cuentas. `institution` es nulo para las cuentas
 /// sueltas, como el efectivo.
@@ -177,6 +178,26 @@ class AccountRepository {
                 Currency.byCode(row.read<String>('currency')),
               )
           });
+
+  /// Suma de todas las cuentas activas, convertidas a euros con los tipos de
+  /// [date]. Las tarjetas en negativo restan.
+  Future<Money> netWorthEur(FxRepository fx, String date) async {
+    final rows = await db
+        .customSelect(
+          '$_balanceSql WHERE a.is_archived = 0',
+          readsFrom: {db.accounts, db.transactions},
+        )
+        .get();
+
+    var totalMinor = 0;
+    for (final row in rows) {
+      final currency = Currency.byCode(row.read<String>('currency'));
+      final balance = Money(row.read<int>('balance_minor'), currency);
+      final resolved = await fx.rateFor(currency, date);
+      totalMinor += resolved.rate.toEur(balance).minorUnits;
+    }
+    return Money(totalMinor, Currency.eur);
+  }
 
   Future<List<AccountGroup>> groupedByInstitution() async {
     final institutions = await (db.select(db.institutions)
