@@ -116,6 +116,7 @@ class _AddSheetState extends ConsumerState<AddSheet> {
                 _accountId = id;
                 if (_counterAccountId == id) _counterAccountId = null;
               }),
+              showAll: true,
             ),
             if (_type == TxType.transfer) ...[
               const SizedBox(height: 12),
@@ -124,6 +125,7 @@ class _AddSheetState extends ConsumerState<AddSheet> {
                 _chipAccounts.where((a) => a.id != _accountId).toList(),
                 selected: _counterAccountId,
                 onPick: (id) => setState(() => _counterAccountId = id),
+                showAll: true,
               ),
             ] else ...[
               const SizedBox(height: 12),
@@ -209,8 +211,9 @@ class _AddSheetState extends ConsumerState<AddSheet> {
     List<Account> accounts, {
     required int? selected,
     required ValueChanged<int> onPick,
+    bool showAll = true,
   }) {
-    if (accounts.isEmpty) {
+    if (accounts.isEmpty && !showAll) {
       return Align(
         alignment: Alignment.centerLeft,
         child: Text('No hay otra cuenta a la que transferir',
@@ -221,9 +224,16 @@ class _AddSheetState extends ConsumerState<AddSheet> {
       height: 40,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        itemCount: accounts.length,
+        itemCount: accounts.length + (showAll ? 1 : 0),
         separatorBuilder: (_, _) => const SizedBox(width: 6),
         itemBuilder: (_, i) {
+          if (i == accounts.length) {
+            return ActionChip(
+              avatar: const Icon(Icons.more_horiz, size: 18),
+              label: const Text('Todas'),
+              onPressed: () => _pickFromAll(onPick),
+            );
+          }
           final a = accounts[i];
           final symbol = Currency.byCode(a.currency).symbol;
           return ChoiceChip(
@@ -234,6 +244,47 @@ class _AddSheetState extends ConsumerState<AddSheet> {
         },
       ),
     );
+  }
+
+  /// Todas las cuentas activas, con su saldo, para llegar a las que no
+  /// entraron entre los cuatro chips más usados.
+  Future<void> _pickFromAll(ValueChanged<int> onPick) async {
+    final all = await ref.read(accountRepoProvider).activeAccounts();
+    final balances = ref.read(balancesProvider).value ?? const <int, Money>{};
+    if (!mounted) return;
+
+    final chosen = await showModalBottomSheet<int>(
+      context: context,
+      useSafeArea: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            for (final a in all)
+              ListTile(
+                title: Text(a.name),
+                subtitle: Text(a.currency),
+                trailing: Text(
+                  formatMoney(balances[a.id] ??
+                      Money.zero(Currency.byCode(a.currency))),
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                onTap: () => Navigator.of(sheetContext).pop(a.id),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (chosen == null || !mounted) return;
+
+    // Si la cuenta elegida no estaba entre los chips, se añade delante para
+    // que se vea seleccionada en lugar de desaparecer del sitio donde se ha
+    // tocado.
+    if (!_chipAccounts.any((a) => a.id == chosen)) {
+      final account = all.firstWhere((a) => a.id == chosen);
+      setState(() => _chipAccounts = [account, ..._chipAccounts]);
+    }
+    onPick(chosen);
   }
 
   Widget _categoryChips() => SizedBox(
@@ -452,30 +503,60 @@ class _AddSheetState extends ConsumerState<AddSheet> {
   }
 }
 
-/// La equivalencia en euros bajo el importe, en vivo.
-class _EurEquivalent extends ConsumerWidget {
+/// La equivalencia en euros bajo el importe.
+///
+/// El futuro se guarda en el estado en vez de crearse dentro de `build`: si
+/// se creara ahí, cada pulsación del teclado lanzaría una consulta nueva y el
+/// texto parpadearía entre «GBP» y «GBP · ≈ 28,70 €». El importe cambia a
+/// cada tecla, pero el tipo de cambio solo depende de la divisa y la fecha.
+class _EurEquivalent extends ConsumerStatefulWidget {
   final Money money;
   final String date;
   const _EurEquivalent({required this.money, required this.date});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_EurEquivalent> createState() => _EurEquivalentState();
+}
+
+class _EurEquivalentState extends ConsumerState<_EurEquivalent> {
+  late Future<ResolvedRate> _rate;
+
+  @override
+  void initState() {
+    super.initState();
+    _rate = _load();
+  }
+
+  @override
+  void didUpdateWidget(_EurEquivalent old) {
+    super.didUpdateWidget(old);
+    if (old.money.currency != widget.money.currency ||
+        old.date != widget.date) {
+      _rate = _load();
+    }
+  }
+
+  Future<ResolvedRate> _load() =>
+      ref.read(fxRepoProvider).rateFor(widget.money.currency, widget.date);
+
+  @override
+  Widget build(BuildContext context) {
     final style = Theme.of(context).textTheme.bodySmall;
     return FutureBuilder<ResolvedRate>(
-      future: ref.watch(fxRepoProvider).rateFor(money.currency, date),
+      future: _rate,
       builder: (_, snapshot) {
         if (snapshot.hasError) {
-          return Text('${money.currency.code} · sin tipo de cambio',
+          return Text('${widget.money.currency.code} · sin tipo de cambio',
               style: style);
         }
         if (!snapshot.hasData) {
-          return Text(money.currency.code, style: style);
+          return Text(widget.money.currency.code, style: style);
         }
         final resolved = snapshot.data!;
-        final eur = resolved.rate.toEur(money);
+        final eur = resolved.rate.toEur(widget.money);
         final suffix = resolved.isEstimated ? ' · tipo estimado' : '';
         return Text(
-          '${money.currency.code} · ≈ ${formatMoney(eur)}$suffix',
+          '${widget.money.currency.code} · ≈ ${formatMoney(eur)}$suffix',
           style: style,
         );
       },
