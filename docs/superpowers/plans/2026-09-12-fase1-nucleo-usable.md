@@ -2596,9 +2596,11 @@ void main() {
     );
 
     // 3204,55 € + (1205,00 £ × 1,172345) + (1900,00 $ × 0,92234)
-    // = 320455 + 141267 + 175245 céntimos
+    //   120500 × 1,172345 = 141267,5725 -> 141268 (el medio sube)
+    //   190000 × 0,92234   = 175244,6    -> 175245
+    // = 320455 + 141268 + 175245 = 636968 céntimos
     final total = await accounts.netWorthEur(fx, '2026-09-12');
-    expect(total, const Money(636967, Currency.eur));
+    expect(total, const Money(636968, Currency.eur));
   });
 
   test('las tarjetas en negativo restan del patrimonio', () async {
