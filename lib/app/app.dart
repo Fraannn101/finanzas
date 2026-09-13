@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../features/home/home_screen.dart';
 
 class FinanzasApp extends StatelessWidget {
   const FinanzasApp({super.key});
@@ -19,17 +20,7 @@ class FinanzasApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const _Placeholder(),
+      home: const HomeScreen(),
     );
   }
-}
-
-/// Marcador de posición hasta la tarea 23, que trae la pantalla real.
-class _Placeholder extends StatelessWidget {
-  const _Placeholder();
-
-  @override
-  Widget build(BuildContext context) => const Scaffold(
-        body: Center(child: Text('Finanzas')),
-      );
 }
