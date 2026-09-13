@@ -122,6 +122,77 @@ class TransactionRepository {
     return fixed;
   }
 
+  /// Una transferencia es una sola fila con las dos cuentas y los dos
+  /// importes. Así no puede existir media transferencia.
+  Future<int> addTransfer({
+    required int fromAccountId,
+    required int toAccountId,
+    required int amountMinor,
+    required int counterAmountMinor,
+    required String date,
+    String? note,
+  }) async {
+    _requirePositive(amountMinor);
+    _requirePositive(counterAmountMinor);
+    if (fromAccountId == toAccountId) {
+      throw ArgumentError('El origen y el destino no pueden ser la misma cuenta');
+    }
+
+    final from = await accounts.byId(fromAccountId);
+    final to = await accounts.byId(toAccountId);
+    if (from.currency == to.currency && amountMinor != counterAmountMinor) {
+      throw ArgumentError(
+        'Entre cuentas de la misma divisa los importes deben coincidir',
+      );
+    }
+
+    final currency = Currency.byCode(from.currency);
+    final resolved = await fx.rateFor(currency, date);
+    final eur = resolved.rate.toEur(Money(amountMinor, currency));
+
+    return db.into(db.transactions).insert(TransactionsCompanion.insert(
+          type: TxType.transfer,
+          accountId: fromAccountId,
+          amountMinor: amountMinor,
+          currency: currency.code,
+          fxRateToEurScaled: resolved.rate.scaled,
+          amountEurMinor: eur.minorUnits,
+          fxIsEstimated: Value(resolved.isEstimated),
+          date: date,
+          counterAccountId: Value(toAccountId),
+          counterAmountMinor: Value(counterAmountMinor),
+          note: Value(note),
+        ));
+  }
+
+  /// El tipo que realmente aplicó el banco, comisión incluida.
+  double effectiveRateOf(Txn tx) {
+    final counter = tx.counterAmountMinor;
+    if (tx.type != TxType.transfer || counter == null || tx.amountMinor == 0) {
+      return 1;
+    }
+    return counter / tx.amountMinor;
+  }
+
+  /// Total en euros de un tipo de movimiento en un rango de fechas.
+  ///
+  /// Las transferencias quedan fuera de gastos e ingresos por construcción:
+  /// mover dinero entre cuentas propias no es ni gastar ni ingresar.
+  Future<Money> totalEurBetween({
+    required String from,
+    required String to,
+    required TxType type,
+  }) async {
+    final sum = db.transactions.amountEurMinor.sum();
+    final row = await (db.selectOnly(db.transactions)
+          ..addColumns([sum])
+          ..where(db.transactions.type.equalsValue(type) &
+              db.transactions.date.isBiggerOrEqualValue(from) &
+              db.transactions.date.isSmallerOrEqualValue(to)))
+        .getSingle();
+    return Money(row.read(sum) ?? 0, Currency.eur);
+  }
+
   static void _requirePositive(int amountMinor) {
     if (amountMinor <= 0) {
       throw ArgumentError('El importe debe ser mayor que cero: $amountMinor');
