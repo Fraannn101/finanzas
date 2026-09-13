@@ -90,6 +90,22 @@ void main() {
     );
   });
 
+  test('el importe recibido tampoco puede ser cero', () async {
+    // El CHECK de SQLite solo prohíbe los negativos, así que sin esta
+    // comprobación una transferencia sacaría dinero del origen y no metería
+    // nada en el destino, sin que fallara nada.
+    expect(
+      () => repo.addTransfer(
+        fromAccountId: barclays,
+        toAccountId: bbva,
+        amountMinor: 85000,
+        counterAmountMinor: 0,
+        date: '2026-09-12',
+      ),
+      throwsArgumentError,
+    );
+  });
+
   test('no se puede transferir una cuenta a sí misma', () async {
     expect(
       () => repo.addTransfer(

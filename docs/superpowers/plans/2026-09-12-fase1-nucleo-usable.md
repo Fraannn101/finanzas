@@ -4140,7 +4140,16 @@ class HomeScreen extends ConsumerWidget {
                     style: const TextStyle(fontWeight: FontWeight.w700)),
                 loading: () => const SizedBox(
                     width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                error: (_, __) => const Text('—'),
+                // Si falta el tipo de una sola divisa, `netWorthEur` no puede
+                // dar un total y esto queda en un guion. Es honesto —un total
+                // parcial disfrazado de total sería peor—, pero conviene que
+                // se pueda tocar para saber por qué.
+                error: (e, __) => Tooltip(
+                  message: e is NoFxRateAvailable
+                      ? e.toString()
+                      : 'No se ha podido calcular el total',
+                  child: const Text('—'),
+                ),
               ),
             ),
           ),
