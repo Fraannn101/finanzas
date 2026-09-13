@@ -134,4 +134,32 @@ void main() {
     await repo.delete(id);
     expect(await accounts.balanceOf(revolutGbp), const Money(0, Currency.gbp));
   });
+
+  test('editar recalcula el importe en euros', () async {
+    final id = await repo.addExpense(
+      accountId: revolutGbp,
+      amountMinor: 2450,
+      categoryId: comida,
+      date: '2026-09-12',
+    );
+    await repo.update(id, amountMinor: 5000, categoryId: comida, date: '2026-09-12');
+    final tx = await repo.byId(id);
+    expect(tx.amountMinor, 5000);
+    expect(tx.amountEurMinor, 5862); // 5000 × 1,172345 = 5861,725 -> 5862
+  });
+
+  test('deshacer un borrado devuelve el movimiento con su id', () async {
+    final id = await repo.addExpense(
+      accountId: revolutGbp,
+      amountMinor: 2450,
+      categoryId: comida,
+      date: '2026-09-12',
+    );
+    final antes = await repo.byId(id);
+    await repo.delete(id);
+    await repo.restore(antes);
+    final despues = await repo.byId(id);
+    expect(despues.id, id);
+    expect(despues.amountMinor, 2450);
+  });
 }

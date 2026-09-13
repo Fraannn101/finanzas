@@ -86,6 +86,42 @@ class TransactionRepository {
   Future<void> delete(int id) =>
       (db.delete(db.transactions)..where((t) => t.id.equals(id))).go();
 
+  /// Actualiza los campos editables. El importe y la fecha vuelven a calcular
+  /// el tipo de cambio congelado, porque un movimiento de otro día vale otra
+  /// cosa en euros.
+  Future<void> update(
+    int id, {
+    required int amountMinor,
+    required int? categoryId,
+    required String date,
+    String? merchant,
+    String? note,
+  }) async {
+    _requirePositive(amountMinor);
+    final existing = await byId(id);
+    final currency = Currency.byCode(existing.currency);
+    final resolved = await fx.rateFor(currency, date);
+    final eur = resolved.rate.toEur(Money(amountMinor, currency));
+
+    await (db.update(db.transactions)..where((t) => t.id.equals(id))).write(
+      TransactionsCompanion(
+        amountMinor: Value(amountMinor),
+        fxRateToEurScaled: Value(resolved.rate.scaled),
+        amountEurMinor: Value(eur.minorUnits),
+        fxIsEstimated: Value(resolved.isEstimated),
+        date: Value(date),
+        categoryId: Value(categoryId),
+        merchant: Value(merchant),
+        note: Value(note),
+        updatedAt: Value(DateTime.now()),
+      ),
+    );
+  }
+
+  /// Vuelve a insertar un movimiento borrado, con su id original.
+  Future<void> restore(Txn tx) =>
+      db.into(db.transactions).insert(tx, mode: InsertMode.insertOrReplace);
+
   /// Rehace la conversión a euros de los movimientos que se guardaron con un
   /// tipo prestado de otro día, ahora que puede haber llegado el de verdad.
   ///
