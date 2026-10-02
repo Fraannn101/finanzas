@@ -67,6 +67,14 @@ Cuando el Plan 2 añada los gastos recurrentes, el esquema pasará a 2. Una copi
 
 AES-256-GCM. La clave se deriva de la contraseña con PBKDF2-HMAC-SHA256, salt aleatorio de 16 bytes por archivo y **100.000 iteraciones exactas**. El número va fijo y escrito aquí a propósito: si cambiara entre versiones, las copias antiguas dejarían de abrirse. Subirlo en el futuro exige incrementar `formato` y mantener la lectura del anterior.
 
+**Por qué 100.000 y no 600.000**, que es la cifra que recomienda OWASP hoy. Es una decisión deliberada, no un descuido, y conviene que esté escrita para que nadie la «corrija» sin leer esto.
+
+Las iteraciones encarecen probar contraseñas a la fuerza. Pero quien ataca necesita primero el archivo, y la entropía de la contraseña domina el cálculo por completo: contra una contraseña de gestor —aleatoria, larga— ni 100.000 ni 600.000 iteraciones cambian nada, porque el espacio de búsqueda ya es inabordable. Contra una contraseña débil, 600.000 tampoco salvan.
+
+Lo que sí cambia con 600.000 es el coste en el móvil. En Dart puro, derivar la clave cuesta ~1,5 s en un portátil; en un teléfono será varias veces más, y con seis veces más iteraciones la exportación podría irse a decenas de segundos. **Una copia de seguridad que tarda tanto que dejas de hacerla vale cero**, y ese es precisamente el riesgo que esta función existe para eliminar.
+
+Si algún día se añade `cryptography_flutter`, que delega en el cifrado nativo del sistema, el coste baja lo bastante como para reconsiderarlo. Mientras tanto, 100.000.
+
 Se usa el paquete `cryptography`, que funciona igual en nativo y en web.
 
 GCM aporta algo más que confidencialidad: **detecta la corrupción**. Si un byte del archivo cambia, el descifrado falla ruidosamente en lugar de devolver datos silenciosamente erróneos.
