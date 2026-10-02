@@ -135,6 +135,18 @@ void main() {
     final b = await BackupCrypto.encrypt('{}', clave);
     expect(a.sublist(9, 25), isNot(b.sublist(9, 25)));
   });
+
+  test('manipular el byte de versión rompe el descifrado', () async {
+    // La cabecera va en claro, pero firmada como AAD. Sin eso, este byte
+    // sería libre de cambiar: el descifrado funcionaría igual y el archivo
+    // mentiría sobre su propia versión.
+    final bytes = await BackupCrypto.encrypt('{"importe":2450}', clave);
+    bytes[8] = 7;
+    expect(
+      () => BackupCrypto.decrypt(bytes, clave),
+      throwsA(isA<BackupPasswordError>()),
+    );
+  });
 }
 ```
 
@@ -210,22 +222,29 @@ class BackupCrypto {
   static Future<SecretKey> _deriveKey(String password, List<int> salt) =>
       _kdf.deriveKeyFromPassword(password: password, nonce: salt);
 
+  /// La cabecera entera se pasa como datos autenticados (AAD). No se cifra
+  /// —hay que poder leerla sin contraseña— pero sí queda firmada, de modo que
+  /// cambiar un byte rompe el descifrado. Sin esto, el byte de versión sería
+  /// libre de manipular: `decrypt` seguiría funcionando y devolvería el texto
+  /// correcto bajo una versión mentida.
+  static Uint8List _header(int version, List<int> salt, List<int> nonce) =>
+      Uint8List.fromList([...utf8.encode(magic), version, ...salt, ...nonce]);
+
   static Future<Uint8List> encrypt(String json, String password) async {
     final salt = _randomBytes(_saltLength);
     final nonce = _randomBytes(_nonceLength);
     final key = await _deriveKey(password, salt);
+    final header = _header(formatVersion, salt, nonce);
 
     final box = await _cipher.encrypt(
       utf8.encode(json),
       secretKey: key,
       nonce: nonce,
+      aad: header,
     );
 
     return Uint8List.fromList([
-      ...utf8.encode(magic),
-      formatVersion,
-      ...salt,
-      ...nonce,
+      ...header,
       ...box.cipherText,
       ...box.mac.bytes,
     ]);
@@ -249,6 +268,7 @@ class BackupCrypto {
       final clear = await _cipher.decrypt(
         SecretBox(cipherText, nonce: nonce, mac: mac),
         secretKey: key,
+        aad: bytes.sublist(0, _headerLength),
       );
       return utf8.decode(clear);
     } catch (_) {
@@ -544,9 +564,12 @@ void main() {
   test('una cabecera manipulada se detecta', () async {
     final bytes = await service.export(clave);
     bytes[8] = 0; // formato menor: pasa el filtro de «demasiado nuevo»
+    // La cabecera va firmada como AAD, así que el descifrado falla antes de
+    // llegar al contraste contra el JSON. Ese contraste sigue existiendo como
+    // segunda red, pero esta es la que salta primero.
     expect(
       () => service.summarize(bytes, clave),
-      throwsA(isA<BackupFormatError>()),
+      throwsA(isA<BackupPasswordError>()),
     );
   });
 }
@@ -1224,6 +1247,8 @@ git commit -m "feat: add password dialog with an irreversibility warning"
 - Create: `lib/features/settings/settings_screen.dart`, `lib/features/home/backup_banner.dart`
 - Modify: `lib/app/providers.dart`, `lib/features/home/home_screen.dart`
 
+**Cuánto tarda esto, medido:** una llamada a `encrypt` ronda **1,5 segundos** en un portátil, y descifrar cuesta lo mismo porque deriva la clave igual. Son las 100.000 iteraciones de PBKDF2, que son lentas a propósito —es lo que encarece probar contraseñas a la fuerza—. En un móvil será más. Por eso `_busy` deshabilita los botones y hay que **comprobar en la Task 10 si la interfaz se congela** durante la espera: si el hilo principal se bloquea, ni siquiera un indicador de progreso giraría, y la solución sería mover el cifrado a un isolate con `compute`. No lo doy por hecho ni lo descarto; se mide.
+
 - [ ] **Step 1: Providers**
 
 Añade a `lib/app/providers.dart` el import `import '../data/backup/backup_service.dart';` y:
@@ -1552,6 +1577,7 @@ flutter run -d emulator-5554
 8. Ajustes → **Deshacer la última restauración**. Deben reaparecer los cambios del punto 5.
 9. Restaurar otra vez con una **contraseña incorrecta**: debe avisar sin tocar los datos.
 10. Comprobar que el aviso de copia **desaparece** de Inicio tras exportar.
+11. **Medir si la interfaz se congela** al exportar. El cifrado tarda más de un segundo por las 100.000 iteraciones de PBKDF2. Mirar si la pantalla responde durante la espera —intentar desplazar la lista, ver si una animación sigue corriendo—. Si se queda tiesa, anotarlo: la solución es mover `encrypt` y `decrypt` a un isolate con `compute`, y es una tarea aparte.
 
 - [ ] **Step 3: Anotar fallos**
 
