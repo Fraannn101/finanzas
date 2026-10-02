@@ -59,22 +59,29 @@ class BackupCrypto {
   static Future<SecretKey> _deriveKey(String password, List<int> salt) =>
       _kdf.deriveKeyFromPassword(password: password, nonce: salt);
 
+  /// La cabecera entera se pasa como datos autenticados (AAD). No se cifra
+  /// —hay que poder leerla sin contraseña— pero sí queda firmada, de modo que
+  /// cambiar un byte rompe el descifrado. Sin esto, el byte de versión sería
+  /// libre de manipular: `decrypt` seguiría funcionando y devolvería el texto
+  /// correcto bajo una versión mentida.
+  static Uint8List _header(int version, List<int> salt, List<int> nonce) =>
+      Uint8List.fromList([...utf8.encode(magic), version, ...salt, ...nonce]);
+
   static Future<Uint8List> encrypt(String json, String password) async {
     final salt = _randomBytes(_saltLength);
     final nonce = _randomBytes(_nonceLength);
     final key = await _deriveKey(password, salt);
+    final header = _header(formatVersion, salt, nonce);
 
     final box = await _cipher.encrypt(
       utf8.encode(json),
       secretKey: key,
       nonce: nonce,
+      aad: header,
     );
 
     return Uint8List.fromList([
-      ...utf8.encode(magic),
-      formatVersion,
-      ...salt,
-      ...nonce,
+      ...header,
       ...box.cipherText,
       ...box.mac.bytes,
     ]);
@@ -97,6 +104,7 @@ class BackupCrypto {
       final clear = await _cipher.decrypt(
         SecretBox(cipherText, nonce: nonce, mac: mac),
         secretKey: key,
+        aad: bytes.sublist(0, _headerLength),
       );
       return utf8.decode(clear);
     } catch (_) {

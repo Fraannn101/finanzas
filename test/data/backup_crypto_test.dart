@@ -55,4 +55,16 @@ void main() {
     final b = await BackupCrypto.encrypt('{}', clave);
     expect(a.sublist(9, 25), isNot(b.sublist(9, 25)));
   });
+
+  test('manipular el byte de versión rompe el descifrado', () async {
+    // La cabecera va en claro, pero firmada como AAD. Sin eso, este byte
+    // sería libre de cambiar: el descifrado funcionaría igual y el archivo
+    // mentiría sobre su propia versión.
+    final bytes = await BackupCrypto.encrypt('{"importe":2450}', clave);
+    bytes[8] = 7;
+    expect(
+      () => BackupCrypto.decrypt(bytes, clave),
+      throwsA(isA<BackupPasswordError>()),
+    );
+  });
 }
