@@ -89,12 +89,14 @@ git commit -m "chore: scaffold Flutter project for Android and iOS"
 
 - [ ] **Step 1: Instalar dependencias de ejecución y de desarrollo**
 
-Se usa `pub add` en vez de fijar versiones a mano para que resuelva las compatibles con Flutter 3.41.
-
 ```bash
-flutter pub add drift drift_flutter path_provider flutter_riverpod intl http
-flutter pub add --dev drift_dev build_runner
+flutter pub add drift:2.34.0 drift_flutter path_provider flutter_riverpod intl http
+flutter pub add --dev drift_dev:2.34.0 build_runner
 ```
+
+**Por qué `drift` va clavado a 2.34.0 y no con `^`:** `drift` y `drift_dev` 2.35.0 exigen `analyzer >=13`, que a su vez exige `meta >=1.18`. Flutter 3.41.4 trae `meta 1.17.0` clavado en el SDK, así que 2.35.0 no resuelve de ninguna manera. La pareja 2.34.0 sí, con `analyzer 10.0.1`. Las dos versiones tienen que moverse juntas: `drift_dev` genera el código que consume `drift`, y un desajuste entre ellas da errores de compilación difíciles de leer. De ahí el pin exacto en ambas, sin intercalo.
+
+Cuando Flutter suba su `meta` a 1.18 o superior, se podrá pasar a `^2.35.0` en ambas a la vez y regenerar con `build_runner`.
 
 - [ ] **Step 2: Verificar que resuelve**
 
@@ -136,8 +138,20 @@ void main() {
     expect(() => Currency.byCode('JPY'), throwsArgumentError);
   });
 
-  test('dos instancias del mismo código son iguales', () {
-    expect(const Currency('EUR', '€', 2), Currency.eur);
+  test('divisas distintas no son iguales', () {
+    expect(Currency.eur, isNot(Currency.gbp));
+  });
+
+  test('buscar por código devuelve la instancia canónica', () {
+    expect(identical(Currency.byCode('EUR'), Currency.eur), isTrue);
+  });
+
+  test('calcula las unidades menores por unidad', () {
+    expect(Currency.eur.minorUnitsPerUnit, 100);
+  });
+
+  test('se imprime como su código', () {
+    expect(Currency.gbp.toString(), 'GBP');
   });
 }
 ```
@@ -161,11 +175,15 @@ class Currency {
   final String symbol;
   final int decimalDigits;
 
-  const Currency(this.code, this.symbol, this.decimalDigits);
+  /// Privado a propósito: el conjunto de divisas es cerrado. Si cualquiera
+  /// pudiera construir una, `Currency('EUR', 'X', 0)` sería `==` a
+  /// [Currency.eur] —porque la igualdad va por código— y se colaría hasta el
+  /// formateo, imprimiendo «123456 €» en lugar de «1.234,56 €».
+  const Currency._(this.code, this.symbol, this.decimalDigits);
 
-  static const eur = Currency('EUR', '€', 2);
-  static const gbp = Currency('GBP', '£', 2);
-  static const usd = Currency('USD', r'$', 2);
+  static const eur = Currency._('EUR', '€', 2);
+  static const gbp = Currency._('GBP', '£', 2);
+  static const usd = Currency._('USD', r'$', 2);
 
   static const all = <Currency>[eur, gbp, usd];
 
@@ -261,10 +279,28 @@ void main() {
   });
 
   test('la suma de una lista vacía es cero en la divisa dada', () {
-    expect(Money.sum(const [], Currency.usd).minorUnits, 0);
+    expect(Money.sum(const [], Currency.usd), Money.zero(Currency.usd));
+  });
+
+  test('sumar una lista con divisas mezcladas es un error', () {
+    expect(
+      () => Money.sum(
+        [const Money(100, Currency.eur), const Money(100, Currency.gbp)],
+        Currency.eur,
+      ),
+      throwsA(isA<CurrencyMismatchError>()),
+    );
+  });
+
+  test('valor absoluto, negación y cero', () {
+    expect(const Money(-5230, Currency.eur).abs, const Money(5230, Currency.eur));
+    expect((-const Money(100, Currency.gbp)).minorUnits, -100);
+    expect(Money.zero(Currency.usd).isZero, isTrue);
   });
 }
 ```
+
+Las dos últimas pruebas cubren ramas que de otro modo llegarían sin red a tareas posteriores: `abs` se usa en el formateo de la tarea 7, `zero` en las tareas 12, 16 y 21, y el control de divisas de `sum` es la única comprobación que no pasa por `_same`.
 
 - [ ] **Step 2: Ejecutar la prueba para verla fallar**
 
@@ -298,20 +334,29 @@ class Money implements Comparable<Money> {
 
   const Money(this.minorUnits, this.currency);
 
-  /// Solo para pruebas y para leer de fuentes externas (CSV). El resto de la
-  /// app trabaja siempre con unidades menores.
+  /// Atajo para pruebas. **No sirve para importar datos reales.**
+  ///
+  /// Pasa por coma flotante, así que hereda sus errores: `1.005` se almacena
+  /// como `1.00499999...` y esto devuelve 100 céntimos, no 101. Para dos
+  /// decimales exactos (`24.50`, `19.99`) es seguro, porque el error queda
+  /// órdenes de magnitud por debajo del medio céntimo.
+  ///
+  /// La importación de CSV **no debe usar esto**: tiene que parsear la cadena
+  /// decimal a entero directamente, sin pasar por `double`.
   factory Money.fromUnits(double units, Currency currency) =>
       Money((units * currency.minorUnitsPerUnit).round(), currency);
 
   static Money zero(Currency currency) => Money(0, currency);
 
+  /// Suma acumulando con `+`, que es quien comprueba la divisa. Hacerlo con
+  /// un entero suelto y un control propio duplicaría esa comprobación, y la
+  /// copia duplicada no la ejercita ninguna prueba.
   static Money sum(Iterable<Money> items, Currency currency) {
-    var total = 0;
+    var total = zero(currency);
     for (final m in items) {
-      if (m.currency != currency) throw CurrencyMismatchError(currency, m.currency);
-      total += m.minorUnits;
+      total += m;
     }
-    return Money(total, currency);
+    return total;
   }
 
   Money operator +(Money other) =>
@@ -405,6 +450,13 @@ void main() {
     expect(rate.toEur(const Money(0, Currency.gbp)).minorUnits, 0);
   });
 
+  test('en negativo el medio se aleja de cero', () {
+    // Mismo empate exacto que la prueba anterior, con signo: -100,5 -> -101.
+    // Una deuda nunca se redondea a una cifra menor de la que es.
+    const rate = FxRate(Currency.usd, 100500000);
+    expect(rate.toEur(const Money(-100, Currency.usd)).minorUnits, -101);
+  });
+
   test('convertir una divisa que no es la del tipo es un error', () {
     const rate = FxRate(Currency.gbp, 117234500);
     expect(
@@ -447,8 +499,11 @@ class FxRate {
   factory FxRate.identity(Currency currency) => FxRate(currency, scale);
 
   /// El BCE publica «unidades de divisa por euro». Invertimos la cotización.
+  /// Se rechaza lo no finito además de lo negativo: `scale / infinity` daría
+  /// un tipo de 0 sin quejarse, y un tipo 0 convierte en cero silenciosamente
+  /// todos los importes de esa divisa.
   factory FxRate.fromEcbQuote(Currency currency, double unitsPerEuro) {
-    if (unitsPerEuro <= 0) {
+    if (unitsPerEuro <= 0 || !unitsPerEuro.isFinite) {
       throw ArgumentError('Cotización inválida para $currency: $unitsPerEuro');
     }
     return FxRate(currency, (scale / unitsPerEuro).round());
@@ -548,6 +603,12 @@ String civilDateOf(DateTime d) =>
     '${d.month.toString().padLeft(2, '0')}-'
     '${d.day.toString().padLeft(2, '0')}';
 
+/// Valida **solo la forma** (tres partes), no los rangos: `'2026-99-99'`
+/// devuelve 2034-06-07 sin quejarse, porque `DateTime` normaliza los meses y
+/// días fuera de rango rodando hacia delante. Basta mientras la entrada la
+/// genere la propia app, que es el caso en toda la Fase 1. La importación de
+/// CSV tendrá que envolverla con una validación de rangos y una comprobación
+/// de ida y vuelta, que además atrapa fechas imposibles como `2026-02-30`.
 DateTime parseCivilDate(String iso) {
   final parts = iso.split('-');
   if (parts.length != 3) throw FormatException('Fecha inválida: $iso');
@@ -600,8 +661,8 @@ void main() {
     expect(formatMoney(const Money(2450, Currency.gbp)), '24,50 £');
   });
 
-  test('formatea negativos con el signo delante', () {
-    expect(formatMoney(const Money(-31240, Currency.eur)), '-312,40 €');
+  test('formatea negativos con el menos tipográfico', () {
+    expect(formatMoney(const Money(-31240, Currency.eur)), '−312,40 €');
   });
 
   test('con signo explícito para las listas de movimientos', () {
@@ -625,13 +686,20 @@ import 'money.dart';
 
 /// «1.234,56 €». La división por 100 es exacta en coma flotante para
 /// cualquier cifra realista y solo se usa para presentar, nunca para calcular.
+///
+/// El menos de `intl` es un guion ASCII; aquí se cambia por el menos
+/// tipográfico (−, U+2212) para que un saldo negativo se vea igual venga de
+/// aquí o de [formatSigned]. Si no, en la misma pantalla conviven dos signos
+/// menos distintos: el de la lista de movimientos y el del saldo de arriba.
 String formatMoney(Money m, {String locale = 'es_ES'}) {
   final formatter = NumberFormat.currency(
     locale: locale,
     symbol: m.currency.symbol,
     decimalDigits: m.currency.decimalDigits,
   );
-  return formatter.format(m.minorUnits / m.currency.minorUnitsPerUnit);
+  return formatter
+      .format(m.minorUnits / m.currency.minorUnitsPerUnit)
+      .replaceFirst('-', '−');
 }
 
 /// Con signo explícito, para las listas de movimientos. Usa el menos
@@ -647,7 +715,7 @@ String formatSigned(Money m, {required bool negate, String locale = 'es_ES'}) {
 Run: `flutter test test/core/formatting_test.dart`
 Expected: PASS, 4 pruebas.
 
-Si el formato de euros falla por el espacio entre número y símbolo, imprime el valor real con `print(formatMoney(...))` y ajusta la cadena esperada: `intl` usa un espacio duro (U+00A0), no un espacio normal. Corrige la **prueba**, no el código.
+`intl` separa el número del símbolo con un **espacio duro** (U+00A0), no con un espacio normal. Las cadenas esperadas tienen que escribirlo como ` `, con el escape a la vista: pegar el carácter invisible funciona igual, pero es indistinguible de un espacio normal al leer el diff y cualquier editor que normalice espacios lo rompe sin dejar rastro. Lo mismo con `−` para el menos.
 
 - [ ] **Step 5: Commit**
 
@@ -695,6 +763,11 @@ class Accounts extends Table {
   IntColumn get initialBalanceMinor => integer().withDefault(const Constant(0))();
   IntColumn get creditLimitMinor => integer().nullable()();
   BoolColumn get isArchived => boolean().withDefault(const Constant(false))();
+
+  /// Orden manual, para una futura pantalla de reordenar. **No** es el orden
+  /// de los chips de la hoja de añadir: ese va por frecuencia de uso, que se
+  /// calcula contando movimientos (ver `mostUsed` en el repositorio). Hoy
+  /// nadie escribe aquí, así que todas las filas valen 0.
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 }
@@ -751,6 +824,24 @@ class Transactions extends Table {
 
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
   DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();
+
+  /// El repositorio ya impide los importes negativos, pero esto lo garantiza
+  /// también para cualquier ruta futura que inserte sin pasar por él —la
+  /// importación de CSV, por ejemplo—. Se añade ahora porque ahora es una
+  /// línea: en SQLite, meter un CHECK en una tabla que ya tiene datos obliga
+  /// a recrearla y copiarla entera.
+  @override
+  List<String> get customConstraints => [
+        'CHECK (amount_minor >= 0)',
+        'CHECK (counter_amount_minor IS NULL OR counter_amount_minor >= 0)',
+        // Sin esto, un `type` corrupto hace que el CASE del cálculo de saldos
+        // devuelva NULL, el COALESCE lo convierta en 0, y la cuenta muestre
+        // su saldo inicial como si no tuviera movimientos. Invisible.
+        "CHECK (type IN ('income', 'expense', 'transfer'))",
+        // Una transferencia a sí misma resta y suma sobre la misma cuenta, y
+        // solo cuadra si ambos importes coinciden —que entre divisas no pasa—.
+        'CHECK (counter_account_id IS NULL OR counter_account_id != account_id)',
+      ];
 }
 
 /// `FxRateRow` para no chocar con `FxRate` de `core/fx.dart`.
@@ -1014,6 +1105,101 @@ void main() {
     expect(await repo.byId(id), isNotNull);
   });
 
+  test('ordena por uso real, no por sortOrder', () async {
+    final poco = await repo.create(
+      name: 'Poco usada',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final mucho = await repo.create(
+      name: 'Muy usada',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    // Ambas tienen sortOrder 0: si el orden viniera de ahí, sería arbitrario.
+    for (var i = 0; i < 3; i++) {
+      await db.into(db.transactions).insert(TransactionsCompanion.insert(
+            type: TxType.expense,
+            accountId: mucho,
+            amountMinor: 100,
+            currency: 'EUR',
+            fxRateToEurScaled: 100000000,
+            amountEurMinor: 100,
+            date: '2026-09-12',
+          ));
+    }
+    // `since` explícito: si dependiera de la fecha de hoy, esta prueba
+    // empezaría a fallar sola a los 90 días de escribirla.
+    final orden = await repo.watchMostUsed(since: '2026-01-01').first;
+    expect(orden.first.id, mucho);
+    expect(orden.map((a) => a.id), contains(poco));
+  });
+
+  test('el uso reciente manda sobre el histórico', () async {
+    final antigua = await repo.create(
+      name: 'Efectivo',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final actual = await repo.create(
+      name: 'Revolut',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    Future<void> gasto(int cuenta, String fecha) =>
+        db.into(db.transactions).insert(TransactionsCompanion.insert(
+              type: TxType.expense,
+              accountId: cuenta,
+              amountMinor: 100,
+              currency: 'EUR',
+              fxRateToEurScaled: 100000000,
+              amountEurMinor: 100,
+              date: fecha,
+            ));
+
+    for (var i = 0; i < 10; i++) {
+      await gasto(antigua, '2024-01-15'); // mucho, pero viejo
+    }
+    await gasto(actual, '2026-09-10'); // poco, pero reciente
+
+    final orden = await repo.watchMostUsed(since: '2026-06-01').first;
+    expect(orden.first.id, actual);
+  });
+
+  test('una transferencia cuenta para las dos cuentas', () async {
+    final origen = await repo.create(
+      name: 'Origen',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final destino = await repo.create(
+      name: 'Destino',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final tercera = await repo.create(
+      name: 'Sin usar',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    await db.into(db.transactions).insert(TransactionsCompanion.insert(
+          type: TxType.transfer,
+          accountId: origen,
+          amountMinor: 1000,
+          currency: 'EUR',
+          fxRateToEurScaled: 100000000,
+          amountEurMinor: 1000,
+          date: '2026-09-12',
+          counterAccountId: Value(destino),
+          counterAmountMinor: const Value(1000),
+        ));
+
+    final orden = await repo.watchMostUsed(since: '2026-01-01').first;
+    // La transferencia sube a las dos, no solo al origen.
+    expect(orden.map((a) => a.id).take(2), containsAll([origen, destino]));
+    expect(orden.last.id, tercera);
+  });
+
   test('permite cambiar la divisa solo si la cuenta está vacía', () async {
     final id = await repo.create(
       name: 'Recién creada',
@@ -1091,15 +1277,59 @@ class AccountRepository {
   Future<Account> byId(int id) =>
       (db.select(db.accounts)..where((a) => a.id.equals(id))).getSingle();
 
+  /// El `id` como segundo criterio no es decorativo: `sortOrder` vale 0 en
+  /// todas las filas, y ordenar por una columna con todos los valores
+  /// iguales deja el orden a criterio del planificador de SQLite, que puede
+  /// cambiar al añadir un índice.
   Future<List<Account>> activeAccounts() => (db.select(db.accounts)
         ..where((a) => a.isArchived.equals(false))
-        ..orderBy([(a) => OrderingTerm(expression: a.sortOrder)]))
+        ..orderBy([
+          (a) => OrderingTerm(expression: a.sortOrder),
+          (a) => OrderingTerm(expression: a.id),
+        ]))
       .get();
 
   Stream<List<Account>> watchActiveAccounts() => (db.select(db.accounts)
         ..where((a) => a.isArchived.equals(false))
-        ..orderBy([(a) => OrderingTerm(expression: a.sortOrder)]))
+        ..orderBy([
+          (a) => OrderingTerm(expression: a.sortOrder),
+          (a) => OrderingTerm(expression: a.id),
+        ]))
       .watch();
+
+  /// Cuentas activas ordenadas por uso, para los chips de la hoja de añadir.
+  ///
+  /// Cuenta primero los movimientos desde [since] (90 días por defecto) y usa
+  /// el total histórico solo para deshacer empates. «Frecuencia» es un ritmo,
+  /// no un acumulado: contando toda la vida, una cuenta de efectivo con 500
+  /// movimientos de hace dos años seguiría por delante de la que usas cada
+  /// día, y lo haría para siempre. El total histórico como segundo criterio
+  /// evita que, al estrenar la app o tras un parón, el orden quede aleatorio.
+  ///
+  /// No se puede resolver con `sortOrder`, que es un valor fijo.
+  Stream<List<Account>> watchMostUsed({int limit = 4, String? since}) {
+    final cutoff = since ??
+        civilDateOf(DateTime.now().subtract(const Duration(days: 90)));
+    return db
+        .customSelect(
+          '''
+          SELECT a.*,
+                 COUNT(t.id) AS all_time,
+                 COUNT(CASE WHEN t.date >= ?2 THEN 1 END) AS recent
+          FROM accounts a
+          LEFT JOIN transactions t
+            ON t.account_id = a.id OR t.counter_account_id = a.id
+          WHERE a.is_archived = 0
+          GROUP BY a.id
+          ORDER BY recent DESC, all_time DESC, a.id ASC
+          LIMIT ?1
+          ''',
+          variables: [Variable<int>(limit), Variable<String>(cutoff)],
+          readsFrom: {db.accounts, db.transactions},
+        )
+        .watch()
+        .map((rows) => rows.map((r) => db.accounts.map(r.data)).toList());
+  }
 
   Future<void> archive(int id) => (db.update(db.accounts)
         ..where((a) => a.id.equals(id)))
@@ -1266,6 +1496,31 @@ void main() {
     await insertTx(type: TxType.expense, accountId: card, amountMinor: 31240, currency: 'EUR');
     expect(await repo.balanceOf(card), const Money(-31240, Currency.eur));
   });
+
+  test('un contra-importe en un gasto no suma a la otra cuenta', () async {
+    // Fila corrupta: un gasto no debería llevar cuenta destino. El filtro
+    // `AND t.type = 'transfer'` del segundo subconsulta existe justo para
+    // ignorarla. Sin esta prueba, borrar ese filtro no rompe nada.
+    final origen = await repo.create(
+      name: 'Origen',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    final otra = await repo.create(
+      name: 'Otra',
+      currency: Currency.eur,
+      type: AccountType.checking,
+    );
+    await insertTx(
+      type: TxType.expense,
+      accountId: origen,
+      amountMinor: 5000,
+      currency: 'EUR',
+      counterAccountId: otra,
+      counterAmountMinor: 5000,
+    );
+    expect(await repo.balanceOf(otra), Money.zero(Currency.eur));
+  });
 }
 ```
 
@@ -1306,6 +1561,9 @@ Y estos métodos dentro de `class AccountRepository`:
     FROM accounts a
   ''';
 
+  /// A propósito **sin** filtrar por archivadas: se pide el saldo de una
+  /// cuenta concreta que ya conoces, y una archivada sigue teniendo saldo.
+  /// El filtro de [watchBalances] es otra cosa: ahí se listan las activas.
   Future<Money> balanceOf(int accountId) async {
     final rows = await db
         .customSelect(
@@ -1392,12 +1650,16 @@ void main() {
     expect(resolved.isEstimated, isFalse);
   });
 
-  test('usa el último tipo anterior y lo marca estimado', () async {
-    // Viernes
+  test('un sábado usa el tipo del viernes y NO lo marca estimado', () async {
     await repo.save('2026-09-11', const FxRate(Currency.gbp, 117234500), source: 'ecb');
-    // Sábado: el BCE no publica
-    final resolved = await repo.rateFor(Currency.gbp, '2026-09-12');
+    final resolved = await repo.rateFor(Currency.gbp, '2026-09-12'); // sábado
     expect(resolved.rate.scaled, 117234500);
+    expect(resolved.isEstimated, isFalse);
+  });
+
+  test('un día laborable sin tipo propio sí se marca estimado', () async {
+    await repo.save('2026-09-10', const FxRate(Currency.gbp, 117234500), source: 'ecb');
+    final resolved = await repo.rateFor(Currency.gbp, '2026-09-11'); // viernes
     expect(resolved.isEstimated, isTrue);
   });
 
@@ -1439,7 +1701,7 @@ class NoFxRateAvailable implements Exception {
   @override
   String toString() =>
       'Sin tipo de cambio para ${currency.code}. Conéctate a internet una vez '
-      'o introdúcelo a mano.';
+      'para descargarlos.';
 }
 
 /// Un tipo resuelto para una fecha concreta. [isEstimated] indica que se ha
@@ -1502,10 +1764,26 @@ class FxRepository {
           ..limit(1))
         .getSingleOrNull();
     if (previous != null) {
-      return ResolvedRate(FxRate(currency, previous.rateToEurScaled), true);
+      return ResolvedRate(
+        FxRate(currency, previous.rateToEurScaled),
+        !_isNonBusinessDay(date),
+      );
     }
 
     throw NoFxRateAvailable(currency);
+  }
+
+  /// Sábado o domingo: el BCE no publica y el tipo del último día hábil es,
+  /// por diseño, **el correcto**, no una estimación provisional. Marcarlo
+  /// como estimado pondría el icono de reloj en dos de cada siete días y la
+  /// señal dejaría de significar nada.
+  ///
+  /// Los festivos de TARGET2 (Navidad, Año Nuevo, Viernes Santo) sí se
+  /// marcarán, porque no se pueden saber sin un calendario. Son unos nueve
+  /// días al año; es una imprecisión asumida, no un descuido.
+  static bool _isNonBusinessDay(String isoDate) {
+    final weekday = DateTime.parse(isoDate).weekday;
+    return weekday == DateTime.saturday || weekday == DateTime.sunday;
   }
 
   Future<String?> latestStoredDate() async {
@@ -1581,7 +1859,48 @@ void main() {
   test('un XML sin cotizaciones es un error de formato', () {
     expect(() => parseEcbDaily('<vacio/>'), throwsFormatException);
   });
+
+  test('lee los atributos en cualquier orden', () {
+    const alReves = '''
+<Cube time="2026-09-11">
+  <Cube rate="0.85300" currency="GBP"/>
+</Cube>''';
+    final rates = parseEcbDaily(alReves).rates;
+    expect(rates.single.currency, Currency.gbp);
+  });
+
+  test('refresh descarga, guarda y no toca la red en las pruebas', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final repo = FxRepository(db);
+    final client = MockClient((_) async => http.Response(_xml, 200));
+
+    expect(await EcbFxService(repo, client: client).refresh(), isTrue);
+    final resolved = await repo.rateFor(Currency.gbp, '2026-09-11');
+    expect(resolved.isEstimated, isFalse);
+    expect(resolved.rate.scaled, closeTo(117233294, 2));
+  });
+
+  test('refresh devuelve false si el servicio falla', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final client = MockClient((_) async => http.Response('caído', 503));
+    expect(await EcbFxService(FxRepository(db), client: client).refresh(), isFalse);
+  });
 }
+```
+
+Los dos últimos necesitan estos imports añadidos al fichero de prueba:
+
+```dart
+import 'package:drift/native.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:finanzas/data/db/database.dart';
+import 'package:finanzas/data/repositories/fx_repository.dart';
+```
+
+`MockClient` viene dentro del paquete `http` que ya está instalado: no hace falta añadir nada. Sin estas dos pruebas, `refresh()` y el lote `DoUpdate` de `saveAll` no los ejercita nadie —solo existen en producción—.
 ```
 
 - [ ] **Step 2: Ejecutar la prueba para verla fallar**
@@ -1607,22 +1926,37 @@ class EcbDaily {
 }
 
 final _dateRe = RegExp(r'time="(\d{4}-\d{2}-\d{2})"');
-final _rateRe = RegExp(r'currency="([A-Z]{3})"\s+rate="([\d.]+)"');
+
+/// Se localiza cada etiqueta `<Cube .../>` y luego se leen sus atributos por
+/// separado, sin depender del orden. Una expresión que exigiera
+/// `currency="..." rate="..."` pegados dejaría de encontrar la divisa —en
+/// silencio, sin error— el día que el BCE cambie el orden o meta un atributo
+/// nuevo entre medias.
+final _cubeRe = RegExp(r'<Cube\s+([^>]*?)/>');
+final _attrRe = RegExp(r'(\w+)="([^"]*)"');
 
 /// Convierte el XML diario del BCE en tipos «euros por unidad».
 EcbDaily parseEcbDaily(String xml) {
   final dateMatch = _dateRe.firstMatch(xml);
-  final matches = _rateRe.allMatches(xml).toList();
-  if (dateMatch == null || matches.isEmpty) {
+  if (dateMatch == null) {
     throw const FormatException('El XML del BCE no tiene el formato esperado');
   }
 
   final supported = Currency.all.map((c) => c.code).toSet();
   final rates = <FxRate>[];
-  for (final m in matches) {
-    final code = m.group(1)!;
-    if (!supported.contains(code)) continue;
-    rates.add(FxRate.fromEcbQuote(Currency.byCode(code), double.parse(m.group(2)!)));
+  for (final cube in _cubeRe.allMatches(xml)) {
+    final attrs = <String, String>{
+      for (final a in _attrRe.allMatches(cube.group(1)!))
+        a.group(1)!: a.group(2)!,
+    };
+    final code = attrs['currency'];
+    final quote = attrs['rate'];
+    if (code == null || quote == null || !supported.contains(code)) continue;
+    rates.add(FxRate.fromEcbQuote(Currency.byCode(code), double.parse(quote)));
+  }
+
+  if (rates.isEmpty) {
+    throw const FormatException('El XML del BCE no tiene el formato esperado');
   }
   return EcbDaily(dateMatch.group(1)!, rates);
 }
@@ -1638,17 +1972,25 @@ class EcbFxService {
       : client = client ?? http.Client();
 
   /// Descarga los tipos del día y los guarda. Devuelve `false` si no se pudo
-  /// (sin conexión, servicio caído): la app sigue funcionando con lo que tenga.
+  /// (sin conexión, servicio caído, XML ilegible): la app sigue funcionando
+  /// con lo que tenga.
+  ///
+  /// Un fallo al **escribir** sí se propaga. Que no haya red es normal y se
+  /// arregla solo; que la base de datos local no acepte una escritura no se
+  /// arregla reintentando, y devolver el mismo `false` lo disfrazaría de
+  /// problema de cobertura.
   Future<bool> refresh() async {
+    final EcbDaily daily;
     try {
-      final response = await client.get(_endpoint).timeout(const Duration(seconds: 10));
+      final response =
+          await client.get(_endpoint).timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) return false;
-      final daily = parseEcbDaily(response.body);
-      await repo.saveAll(daily.date, daily.rates, source: 'ecb');
-      return true;
+      daily = parseEcbDaily(response.body);
     } catch (_) {
       return false;
     }
+    await repo.saveAll(daily.date, daily.rates, source: 'ecb');
+    return true;
   }
 }
 ```
@@ -1773,6 +2115,36 @@ void main() {
     expect(await accounts.balanceOf(revolutGbp), const Money(50000, Currency.gbp));
   });
 
+  test('recalcula los movimientos guardados con un tipo prestado', () async {
+    // El viernes 11 no hay tipo propio, así que el gasto nace estimado.
+    final id = await repo.addExpense(
+      accountId: revolutGbp,
+      amountMinor: 10000,
+      categoryId: comida,
+      date: '2026-09-11',
+    );
+    expect((await repo.byId(id)).fxIsEstimated, isTrue);
+
+    // Llega el tipo real de ese viernes.
+    await fx.save('2026-09-11', const FxRate(Currency.gbp, 120000000), source: 'ecb');
+    expect(await repo.recomputeEstimated(), 1);
+
+    final tx = await repo.byId(id);
+    expect(tx.fxIsEstimated, isFalse);
+    expect(tx.fxRateToEurScaled, 120000000);
+    expect(tx.amountEurMinor, 12000); // 100,00 £ × 1,2
+  });
+
+  test('no toca los movimientos cuyo tipo real sigue sin llegar', () async {
+    await repo.addExpense(
+      accountId: revolutGbp,
+      amountMinor: 10000,
+      categoryId: comida,
+      date: '2026-09-11',
+    );
+    expect(await repo.recomputeEstimated(), 0);
+  });
+
   test('borrar un movimiento devuelve el saldo a su sitio', () async {
     final id = await repo.addExpense(
       accountId: revolutGbp,
@@ -1881,6 +2253,42 @@ class TransactionRepository {
 
   Future<void> delete(int id) =>
       (db.delete(db.transactions)..where((t) => t.id.equals(id))).go();
+
+  /// Rehace la conversión a euros de los movimientos que se guardaron con un
+  /// tipo prestado de otro día, ahora que puede haber llegado el de verdad.
+  ///
+  /// Sin esto, la especificación promete algo que nadie cumple: un gasto
+  /// apuntado sin cobertura se quedaría marcado como estimado para siempre,
+  /// aunque el tipo correcto se descargue cinco minutos después. Se llama
+  /// después de cada descarga que haya ido bien.
+  Future<int> recomputeEstimated() async {
+    final pending = await (db.select(db.transactions)
+          ..where((t) => t.fxIsEstimated.equals(true)))
+        .get();
+
+    var fixed = 0;
+    for (final tx in pending) {
+      final currency = Currency.byCode(tx.currency);
+      final ResolvedRate resolved;
+      try {
+        resolved = await fx.rateFor(currency, tx.date);
+      } on NoFxRateAvailable {
+        continue; // sigue sin haber nada mejor
+      }
+      if (resolved.isEstimated) continue; // el tipo real aún no ha llegado
+
+      final eur = resolved.rate.toEur(Money(tx.amountMinor, currency));
+      await (db.update(db.transactions)..where((t) => t.id.equals(tx.id)))
+          .write(TransactionsCompanion(
+        fxRateToEurScaled: Value(resolved.rate.scaled),
+        amountEurMinor: Value(eur.minorUnits),
+        fxIsEstimated: const Value(false),
+        updatedAt: Value(DateTime.now()),
+      ));
+      fixed++;
+    }
+    return fixed;
+  }
 
   static void _requirePositive(int amountMinor) {
     if (amountMinor <= 0) {
@@ -2188,9 +2596,11 @@ void main() {
     );
 
     // 3204,55 € + (1205,00 £ × 1,172345) + (1900,00 $ × 0,92234)
-    // = 320455 + 141267 + 175245 céntimos
+    //   120500 × 1,172345 = 141267,5725 -> 141268 (el medio sube)
+    //   190000 × 0,92234   = 175244,6    -> 175245
+    // = 320455 + 141268 + 175245 = 636968 céntimos
     final total = await accounts.netWorthEur(fx, '2026-09-12');
-    expect(total, const Money(636967, Currency.eur));
+    expect(total, const Money(636968, Currency.eur));
   });
 
   test('las tarjetas en negativo restan del patrimonio', () async {
@@ -2322,8 +2732,15 @@ final ecbServiceProvider =
     Provider((ref) => EcbFxService(ref.watch(fxRepoProvider)));
 
 /// Se lanza una vez al arrancar. Si falla, la app sigue con lo que tenga.
-final fxRefreshProvider = FutureProvider<bool>(
-    (ref) => ref.watch(ecbServiceProvider).refresh());
+///
+/// Cuando la descarga va bien, se rehacen los movimientos que se guardaron
+/// con un tipo prestado: es el único momento en que puede haber llegado el
+/// tipo real que les faltaba.
+final fxRefreshProvider = FutureProvider<bool>((ref) async {
+  final ok = await ref.watch(ecbServiceProvider).refresh();
+  if (ok) await ref.watch(transactionRepoProvider).recomputeEstimated();
+  return ok;
+});
 
 final accountsProvider = StreamProvider(
     (ref) => ref.watch(accountRepoProvider).watchActiveAccounts());
@@ -2494,6 +2911,23 @@ class CategoryRepository {
         ..orderBy([(c) => OrderingTerm(expression: c.sortOrder)]))
       .get();
 
+  /// Categorías de un tipo ordenadas por uso real, para los chips de la hoja
+  /// de añadir. Las que nunca has usado quedan detrás, en el orden sembrado.
+  Stream<List<Category>> watchMostUsed(CategoryKind kind) => db
+      .customSelect(
+        '''
+        SELECT c.* FROM categories c
+        LEFT JOIN transactions t ON t.category_id = c.id
+        WHERE c.is_archived = 0 AND c.kind = ?1
+        GROUP BY c.id
+        ORDER BY COUNT(t.id) DESC, c.sort_order ASC
+        ''',
+        variables: [Variable<String>(kind.name)],
+        readsFrom: {db.categories, db.transactions},
+      )
+      .watch()
+      .map((rows) => rows.map((r) => db.categories.map(r.data)).toList());
+
   Future<int> create({
     required String name,
     required CategoryKind kind,
@@ -2639,6 +3073,8 @@ git commit -m "feat: add calculator-style amount input"
 **Files:**
 - Create: `lib/features/transactions/add_sheet.dart`
 - Modify: `lib/app/providers.dart`
+
+**El orden de los chips se congela al abrir la hoja.** `watchMostUsed` es un stream que se recalcula con cada escritura, y eso es correcto para su contrato. Pero si la hoja se enganchara al stream mientras está abierta, un movimiento que entre por otro lado —un recurrente automático, una importación— puede reordenar los chips **entre que miras y tocas**, y el gasto acaba en la cuenta equivocada sin que nada falle. Se toma la primera emisión al abrir y se mantiene hasta cerrar.
 
 - [ ] **Step 1: Escribir la hoja**
 
@@ -3704,7 +4140,16 @@ class HomeScreen extends ConsumerWidget {
                     style: const TextStyle(fontWeight: FontWeight.w700)),
                 loading: () => const SizedBox(
                     width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                error: (_, __) => const Text('—'),
+                // Si falta el tipo de una sola divisa, `netWorthEur` no puede
+                // dar un total y esto queda en un guion. Es honesto —un total
+                // parcial disfrazado de total sería peor—, pero conviene que
+                // se pueda tocar para saber por qué.
+                error: (e, __) => Tooltip(
+                  message: e is NoFxRateAvailable
+                      ? e.toString()
+                      : 'No se ha podido calcular el total',
+                  child: const Text('—'),
+                ),
               ),
             ),
           ),
@@ -3860,4 +4305,13 @@ Consecuencia de dejar Ajustes para el Plan 3: en la Fase 1 se trabaja con las tr
 
 Las columnas `recurringRuleId`, `importBatchId` y `dedupeHash` ya existen en `transactions` desde la tarea 8, de modo que ninguno de los dos planes siguientes necesita migrar datos.
 
-**Nota para el Plan 2:** será el primero que suba `schemaVersion` a 2. Ahí es donde toca implementar la copia automática previa a la migración que pide la especificación; en la Fase 1 no aplica, porque solo existe la creación inicial del esquema.
+**Notas para el Plan 2**
+
+Será el primero que suba `schemaVersion` a 2. Ahí es donde toca implementar la copia automática previa a la migración que pide la especificación; en la Fase 1 no aplica, porque solo existe la creación inicial del esquema.
+
+Dos detalles que ahorrarán un rato a quien lo escriba:
+
+- **La copia va como primera instrucción dentro de `onUpgrade`, no en `beforeOpen`.** Drift ejecuta `beforeOpen` *después* de `onCreate`/`onUpgrade`, así que una copia hecha ahí guardaría la base ya migrada, que es justo lo que no sirve.
+- **`_seedCategories` solo corre en `onCreate`.** Quien añada una categoría por defecto en una versión futura tiene que insertarla también desde `onUpgrade`; a quien ya tenga la app instalada no le va a aparecer sola.
+
+**Sobre los índices.** No hay ninguno más allá de las claves primarias, y es deliberado. Las consultas de saldo y de rango de fechas recorren la tabla entera, lo cual a unos pocos miles de movimientos al año es imperceptible: el problema empezaría alrededor de las 50.000-100.000 filas, que a este ritmo son décadas. Añadir un índice más adelante es una operación barata y no destructiva, al contrario que añadir un `CHECK`. Revisarlo si `transactions` se acerca a esa cifra o si se nota retraso al guardar.

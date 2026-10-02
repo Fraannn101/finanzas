@@ -184,6 +184,7 @@ La hoja contiene, de arriba abajo:
 | Borrar cuenta o categoría con movimientos | No se borra: se archiva. Desaparece de la interfaz y sus movimientos siguen contando. |
 | Cambiar la divisa de una cuenta | Permitido solo si la cuenta no tiene movimientos. Con movimientos: archivar y crear otra. |
 | Importar dos veces el mismo extracto | Huella por fila (fecha + importe + concepto + cuenta). La vista previa marca las existentes y no las reinserta. |
+| Leer un importe de un CSV | La cadena decimal se parsea **directamente a unidades menores**, partiendo por la coma o el punto y rellenando los decimales. Nunca pasando por `double`: `1.005` se almacena en binario como `1.00499999…` y redondearía a 100 céntimos en lugar de 101. Es un céntimo por fila, en miles de filas. |
 | Mapeo de columnas erróneo | El lote de importación se deshace entero de un toque. |
 | Husos horarios | Las fechas se guardan sin hora. Un gasto de las 23:50 no salta de día. |
 | Migración de esquema | Copia de seguridad automática antes de cada migración. |
@@ -192,6 +193,8 @@ La hoja contiene, de arriba abajo:
 ### Redondeo
 
 La conversión a euros redondea al céntimo más cercano, con el medio hacia arriba. Los informes suman los importes en euros ya redondeados de cada movimiento, de modo que el total mostrado siempre coincide con la suma de las líneas visibles.
+
+En importes negativos —el saldo de una tarjeta de crédito— el medio se redondea **alejándose de cero**, no hacia arriba: −100,5 céntimos da −101, no −100. Así una deuda nunca queda registrada por menos de lo que es. Es además la convención habitual de «medio hacia arriba» en software. Queda escrito aquí para que nadie lo «arregle» más adelante convirtiéndolo en un error de verdad.
 
 ## 7. Pruebas
 
