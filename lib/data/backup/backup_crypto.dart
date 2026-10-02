@@ -88,7 +88,14 @@ class BackupCrypto {
   }
 
   static Future<String> decrypt(Uint8List bytes, String password) async {
-    readFormat(bytes); // valida la cabecera antes de nada
+    final version = readFormat(bytes);
+    // Se comprueba aquí además de en quien llama. Sin esto, un archivo
+    // legítimo de una versión futura fallaría en GCM y el usuario leería
+    // «contraseña incorrecta», que es el mensaje equivocado para ese caso.
+    if (version > formatVersion) {
+      throw BackupFormatError(
+          'Esta copia se hizo con una versión más nueva de la app');
+    }
 
     final salt = bytes.sublist(_magicLength + 1, _magicLength + 1 + _saltLength);
     final nonce = bytes.sublist(_magicLength + 1 + _saltLength, _headerLength);
