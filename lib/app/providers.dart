@@ -47,8 +47,15 @@ final balancesProvider = StreamProvider<Map<int, Money>>(
     (ref) => ref.watch(accountRepoProvider).watchBalances());
 
 final netWorthProvider = FutureProvider<Money>((ref) async {
-  // Depende de los saldos para recalcularse cuando cambie un movimiento.
-  ref.watch(balancesProvider);
+  // Se **espera** a los saldos, no basta con observarlos.
+  //
+  // Observándolos sin esperar, la primera emisión del stream reconstruye este
+  // provider justo mientras está detenido en el `await` siguiente, y deja la
+  // petición original huérfana: nunca se completa. En una lectura en frío eso
+  // deja el patrimonio total cargando para siempre, que es la cifra principal
+  // de la pantalla de inicio. Esperar aquí lo resuelve y sigue recalculando
+  // cuando los saldos cambian.
+  await ref.watch(balancesProvider.future);
   await ref.watch(fxRefreshProvider.future);
   return ref
       .watch(accountRepoProvider)
