@@ -42,6 +42,7 @@ class BackupService {
     };
     final bytes = await BackupCrypto.encrypt(jsonEncode(payload), password);
     await _putSetting(_keyLastBackup, DateTime.now().toUtc().toIso8601String());
+    await clearRescue();
     return bytes;
   }
 
@@ -80,6 +81,83 @@ class BackupService {
     final esquema = json['esquema'] as int? ?? 0;
     if (esquema > db.schemaVersion) throw BackupTooNewError(formato);
     return json;
+  }
+
+  static const _keyRescue = 'rescate';
+  static const _keyRescueDate = 'rescate_fecha';
+
+  /// Reemplaza la base de datos con el contenido de la copia.
+  ///
+  /// Antes de tocar nada guarda un rescate de lo que hay, para que elegir el
+  /// archivo equivocado tenga arreglo. Todo ocurre en una transacción: entra
+  /// entero o no entra nada.
+  Future<void> import(Uint8List bytes, String password) async {
+    // Fuera de la transacción: si la contraseña falla, no se ha tocado nada.
+    final json = await _open(bytes, password);
+    final dump = _asDump(json);
+    final rescue = jsonEncode(await BackupCodec.dump(db));
+
+    await db.transaction(() async {
+      // Las claves foráneas se comprueban al confirmar, no fila a fila. Sin
+      // esto, una categoría cuyo `parent_id` apunta a otra con id mayor
+      // rompería la inserción solo por el orden en que salieron del volcado.
+      await db.customStatement('PRAGMA defer_foreign_keys = ON');
+
+      await BackupCodec.restore(db, dump);
+      // Después de reemplazar, no antes: `app_settings` es una de las tablas
+      // que acaba de sustituirse, y el rescate que viniera en el archivo sería
+      // el de otro dispositivo.
+      await _putSetting(_keyRescue, rescue);
+      await _putSetting(
+          _keyRescueDate, DateTime.now().toUtc().toIso8601String());
+    });
+  }
+
+  Future<bool> hasRescue() async => await _getSetting(_keyRescue) != null;
+
+  /// Deshace la última importación. El rescate se consume al usarlo.
+  Future<void> undoImport() async {
+    final rescue = await _getSetting(_keyRescue);
+    if (rescue == null) return;
+    final dump = _asDump(jsonDecode(rescue) as Map<String, dynamic>);
+
+    await db.transaction(() async {
+      await db.customStatement('PRAGMA defer_foreign_keys = ON');
+      await BackupCodec.restore(db, dump);
+      await db.customStatement(
+        'DELETE FROM app_settings WHERE "key" IN (?, ?)',
+        [_keyRescue, _keyRescueDate],
+      );
+    });
+  }
+
+  /// Quita el rescate. Se llama al exportar: a partir de ahí hay un respaldo
+  /// mejor, y el rescate solo engordaría la siguiente copia.
+  Future<void> clearRescue() => db.customStatement(
+        'DELETE FROM app_settings WHERE "key" IN (?, ?)',
+        [_keyRescue, _keyRescueDate],
+      );
+
+  /// Lo que hay ahora mismo, para enseñarlo junto a lo que trae la copia.
+  Future<BackupSummary> currentCounts() async {
+    final dump = await BackupCodec.dump(db);
+    return BackupSummary(
+      dump['accounts']!.length,
+      dump['transactions']!.length,
+      DateTime.now(),
+    );
+  }
+
+  /// Las tablas que el archivo no traiga —porque se hizo con un esquema
+  /// anterior— quedan vacías en lugar de hacer fallar la importación.
+  static Map<String, List<Map<String, Object?>>> _asDump(
+      Map<String, dynamic> json) {
+    return {
+      for (final table in BackupCodec.tableNames)
+        table: ((json[table] as List?) ?? const [])
+            .map((row) => Map<String, Object?>.from(row as Map))
+            .toList(),
+    };
   }
 
   Future<DateTime?> lastBackupDate() async {
