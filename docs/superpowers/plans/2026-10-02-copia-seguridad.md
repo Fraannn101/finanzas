@@ -1728,6 +1728,18 @@ git tag copia-seguridad
 
 ---
 
+## Lo que encontró la verificación a mano
+
+Tres cosas que las 134 pruebas no podían ver, porque ninguna se ejecuta en un dispositivo:
+
+1. **El patrimonio total se quedaba cargando para siempre** en un arranque en frío. `netWorthProvider` observaba los saldos sin esperarlos, y su primera emisión reconstruía el provider a mitad del `await`, dejando la petición huérfana. Es anterior a este trabajo. Arreglado, con dos pruebas que leen el provider en frío igual que hace la pantalla de inicio.
+2. **El archivo compartido salía como `f68-11f1-af5c-6da8bfca4b75.bin`.** El `name` de `XFile.fromData` no llega al archivo; share_plus escribe un temporal con nombre generado. Arreglado con `fileNameOverrides`.
+3. **Los iconos salían como cuadros vacíos.** No era de la app: una compilación interrumpida dejó el bundle de recursos de debug sin `FontManifest.json`, y la siguiente lo dio por bueno. Se arregla borrando `build/app/intermediates/assets/debug` y recompilando.
+
+**Respuesta a la pregunta abierta sobre el congelado:** la interfaz **no se bloquea** durante el cifrado. La barra de progreso aparece en posiciones distintas en capturas sucesivas, así que sigue animándose durante las 100.000 iteraciones de PBKDF2. No hace falta mover el cifrado a un isolate.
+
+**Lo que no se llegó a verificar a mano:** restaurar desde un archivo, deshacer una restauración, y el selector de archivos en la build web. Requieren elegir un archivo en el diálogo del sistema, que no se puede automatizar con `adb input` de forma fiable.
+
 ## Lo que esto no hace
 
 - **No sincroniza.** Cada dispositivo tiene su base de datos. La copia es el puente, y es manual a propósito.
