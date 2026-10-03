@@ -1218,10 +1218,23 @@ class BackupFile {
     );
   }
 
+  /// Una copia de finanzas personales pesa kilobytes; unos pocos megas si
+  /// hay años de movimientos. El tope existe porque elegir un vídeo por
+  /// error cargaría el archivo entero en memoria antes de comprobar nada, y
+  /// en un móvil eso es un cierre por falta de memoria, no un mensaje.
+  static const maxBytes = 50 * 1024 * 1024;
+
   /// `null` si el usuario cancela.
   static Future<Uint8List?> pick() async {
-    final result = await FilePicker.platform.pickFiles(withData: true);
-    return result?.files.single.bytes;
+    final file = await FilePicker.pickFile();
+    if (file == null) return null;
+
+    final size = await file.length();
+    if (size > maxBytes) {
+      throw BackupFormatError(
+          'Ese archivo es demasiado grande para ser una copia de Finanzas');
+    }
+    return file.readAsBytes();
   }
 }
 ```
@@ -1530,7 +1543,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Future<void> _import() async {
-    final bytes = await BackupFile.pick();
+    // `pick` puede lanzar: lectura fallida del archivo, o un archivo
+    // demasiado grande para ser una copia. Sin este try, el usuario vería un
+    // error crudo de plataforma.
+    final Uint8List? bytes;
+    try {
+      bytes = await BackupFile.pick();
+    } on BackupFormatError catch (e) {
+      _say(e.toString());
+      return;
+    } catch (e) {
+      _say('No se pudo leer el archivo: $e');
+      return;
+    }
     if (bytes == null || !mounted) return;
 
     final password =
