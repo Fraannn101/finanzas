@@ -6,8 +6,10 @@ import '../../core/formatting.dart';
 import '../../data/db/database.dart';
 import '../../data/repositories/fx_repository.dart';
 import '../accounts/accounts_screen.dart';
+import '../settings/settings_screen.dart';
 import '../transactions/add_sheet.dart';
 import '../transactions/edit_screen.dart';
+import 'backup_banner.dart';
 import 'transaction_tile.dart';
 
 class HomeScreen extends ConsumerWidget {
@@ -47,6 +49,13 @@ class HomeScreen extends ConsumerWidget {
             ),
           ),
           IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Ajustes',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+          ),
+          IconButton(
             icon: const Icon(Icons.account_balance_wallet_outlined),
             tooltip: 'Cuentas',
             onPressed: () => Navigator.of(context).push(
@@ -55,47 +64,54 @@ class HomeScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: transactions.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Error: $e')),
-        data: (list) {
-          if (list.isEmpty) {
-            return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(32),
-                child: Text(
-                  'Todavía no hay movimientos este mes.\n'
-                  'Toca + para añadir el primero.',
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            );
-          }
-          final accountsById = {
-            for (final a in accounts.value ?? const <Account>[]) a.id: a,
-          };
-          final categoriesById = {
-            for (final c in categories.value ?? const <Category>[]) c.id: c,
-          };
-          return ListView.separated(
-            itemCount: list.length,
-            separatorBuilder: (_, _) => const Divider(height: 1),
-            itemBuilder: (_, i) {
-              final tx = list[i];
-              final category = categoriesById[tx.categoryId];
-              return TransactionTile(
-                tx: tx,
-                accountName: accountsById[tx.accountId]?.name ?? '—',
-                categoryName: category?.name,
-                categoryIcon: category?.icon ?? '🏷️',
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                      builder: (_) => EditTransactionScreen(txId: tx.id)),
-                ),
-              );
-            },
-          );
-        },
+      body: Column(
+        children: [
+          const BackupBanner(),
+          Expanded(
+            child: transactions.when(
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (e, _) => Center(child: Text('Error: $e')),
+              data: (list) {
+                if (list.isEmpty) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32),
+                      child: Text(
+                        'Todavía no hay movimientos este mes.\n'
+                        'Toca + para añadir el primero.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  );
+                }
+                final accountsById = {
+                  for (final a in accounts.value ?? const <Account>[]) a.id: a,
+                };
+                final categoriesById = {
+                  for (final c in categories.value ?? const <Category>[]) c.id: c,
+                };
+                return ListView.separated(
+                  itemCount: list.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final tx = list[i];
+                    final category = categoriesById[tx.categoryId];
+                    return TransactionTile(
+                      tx: tx,
+                      accountName: accountsById[tx.accountId]?.name ?? '—',
+                      categoryName: category?.name,
+                      categoryIcon: category?.icon ?? '🏷️',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => EditTransactionScreen(txId: tx.id)),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => showAddSheet(context),
