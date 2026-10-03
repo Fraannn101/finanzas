@@ -4,6 +4,8 @@ import 'package:file_saver/file_saver.dart';
 import 'package:flutter/foundation.dart';
 import 'package:share_plus/share_plus.dart';
 
+import 'backup_crypto.dart';
+
 /// Lo único que distingue Android de la web.
 ///
 /// En Android se abre el menú de compartir, que es lo que permite mandar la
@@ -39,9 +41,24 @@ class BackupFile {
     );
   }
 
+  /// Una copia de finanzas personales pesa kilobytes; unos pocos megas si
+  /// hay años de movimientos. El tope existe porque elegir un vídeo por
+  /// error cargaría el archivo entero en memoria antes de comprobar nada, y
+  /// en un móvil eso es un cierre por falta de memoria, no un mensaje.
+  static const maxBytes = 50 * 1024 * 1024;
+
   /// `null` si el usuario cancela.
   static Future<Uint8List?> pick() async {
     final file = await FilePicker.pickFile();
-    return file?.readAsBytes();
+    if (file == null) return null;
+
+    // `length()` devuelve `null` si no pudo averiguarse el tamaño (13.x); en
+    // ese caso no hay nada que comparar y se lee igualmente.
+    final size = await file.length();
+    if (size != null && size > maxBytes) {
+      throw BackupFormatError(
+          'Ese archivo es demasiado grande para ser una copia de Finanzas');
+    }
+    return file.readAsBytes();
   }
 }
