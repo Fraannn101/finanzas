@@ -72,6 +72,13 @@ class BackupService {
       throw BackupFormatError(
           'La cabecera del archivo no concuerda con su contenido');
     }
+
+    // Un esquema anterior se acepta: las tablas que no existían quedan
+    // vacías. Uno **posterior** no, porque traería columnas que esta versión
+    // desconoce y el fallo aparecería a mitad de la restauración como un
+    // error crudo de SQLite. Mejor pararlo aquí, con un mensaje legible.
+    final esquema = json['esquema'] as int? ?? 0;
+    if (esquema > db.schemaVersion) throw BackupTooNewError(formato);
     return json;
   }
 

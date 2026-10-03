@@ -79,4 +79,18 @@ void main() {
         (json['app_settings'] as List).map((f) => (f as Map)['key']);
     expect(claves, isNot(contains('ultima_copia')));
   });
+
+  test('un esquema posterior se rechaza con un mensaje legible', () async {
+    // Mismo formato de archivo, pero hecho por una app con más tablas. Sin
+    // esta comprobación reventaría a mitad de la restauración con un error
+    // crudo de SQLite sobre una columna desconocida.
+    final bytes = await service.export(clave);
+    final json = await BackupCrypto.decrypt(bytes, clave);
+    final futura = await BackupCrypto.encrypt(
+        json.replaceFirst('"esquema":1', '"esquema":99'), clave);
+    expect(
+      () => service.summarize(futura, clave),
+      throwsA(isA<BackupTooNewError>()),
+    );
+  });
 }
