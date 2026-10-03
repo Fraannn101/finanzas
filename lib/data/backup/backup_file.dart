@@ -36,6 +36,12 @@ class BackupFile {
         files: [
           XFile.fromData(bytes, name: name, mimeType: 'application/octet-stream')
         ],
+        // `name` en `XFile.fromData` no llega al archivo: share_plus escribe
+        // un temporal con un nombre generado, y la copia acababa en Drive
+        // como `f68-11f1-af5c-6da8bfca4b75.bin`. Dentro de un año eso es
+        // indescifrable, y el nombre con la fecha existe justo para poder
+        // reconocerla entre varias.
+        fileNameOverrides: [name],
         subject: name,
       ),
     );
