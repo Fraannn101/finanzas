@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/civil_date.dart';
 import '../core/money.dart';
+import '../data/backup/backup_service.dart';
 import '../data/db/database.dart';
 import '../data/repositories/account_repository.dart';
 import '../data/repositories/category_repository.dart';
@@ -46,8 +47,15 @@ final balancesProvider = StreamProvider<Map<int, Money>>(
     (ref) => ref.watch(accountRepoProvider).watchBalances());
 
 final netWorthProvider = FutureProvider<Money>((ref) async {
-  // Depende de los saldos para recalcularse cuando cambie un movimiento.
-  ref.watch(balancesProvider);
+  // Se **espera** a los saldos, no basta con observarlos.
+  //
+  // Observándolos sin esperar, la primera emisión del stream reconstruye este
+  // provider justo mientras está detenido en el `await` siguiente, y deja la
+  // petición original huérfana: nunca se completa. En una lectura en frío eso
+  // deja el patrimonio total cargando para siempre, que es la cifra principal
+  // de la pantalla de inicio. Esperar aquí lo resuelve y sigue recalculando
+  // cuando los saldos cambian.
+  await ref.watch(balancesProvider.future);
   await ref.watch(fxRefreshProvider.future);
   return ref
       .watch(accountRepoProvider)
@@ -66,4 +74,16 @@ final monthTransactionsProvider = StreamProvider((ref) {
         from: firstDayOfMonth(now),
         to: lastDayOfMonth(now),
       );
+});
+
+final backupServiceProvider =
+    Provider((ref) => BackupService(ref.watch(dbProvider)));
+
+/// Días desde la última copia. `null` si nunca se ha hecho ninguna.
+final daysSinceBackupProvider = FutureProvider<int?>((ref) async {
+  // Depende de los movimientos para refrescarse al usar la app.
+  ref.watch(monthTransactionsProvider);
+  final date = await ref.watch(backupServiceProvider).lastBackupDate();
+  if (date == null) return null;
+  return DateTime.now().toUtc().difference(date).inDays;
 });
